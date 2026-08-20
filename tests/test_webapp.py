@@ -12,12 +12,18 @@ from webapp import create_app
 @pytest.fixture()
 def app():
     with TemporaryDirectory() as directory:
-        yield create_app({
+        application = create_app({
             "TESTING": True,
             "DATA_DIR": directory,
             "SECRET_KEY": "test-secret",
             "APP_CONFIG": AppConfig(),
         })
+        yield application
+        for handler in application.extensions["logger"].handlers:
+            handler.flush()
+            if hasattr(handler, "baseFilename"):
+                handler.close()
+        application.extensions["logger"].handlers.clear()
 
 
 def test_web_pages_and_unauthorized_api(app) -> None:
