@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grid-realtime-monitor"
+version = "0.1.0"
+description = "微网格实时优化流程 Web 监控工具"
+requires-python = ">=3.10"
+dependencies = [
+  "Flask>=3.0",
+  "requests>=2.32",
+  "beautifulsoup4>=4.12",
+  "cryptography>=43",
+  "keyring>=25",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+production = ["waitress>=3.0"]
+
+[tool.setuptools.packages.find]
+include = ["backend*", "shared*", "webapp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

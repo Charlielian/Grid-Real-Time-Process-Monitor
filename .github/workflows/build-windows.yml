@@ -1,0 +1,60 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      GRID_MONITOR_DATA_DIR: ${{ runner.temp }}\\grid-monitor-data
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build executable
+        shell: pwsh
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --name GridRealtimeMonitor
+          --add-data "config.yaml;."
+          --add-data "webapp/templates;webapp/templates"
+          --add-data "webapp/static;webapp/static"
+          --collect-submodules keyring.backends
+          --hidden-import keyring.backends.Windows
+          run.py
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/GridRealtimeMonitor.exe")) {
+            throw "PyInstaller did not produce dist/GridRealtimeMonitor.exe"
+          }
+          Get-Item "dist/GridRealtimeMonitor.exe" | Format-List FullName,Length
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GridRealtimeMonitor-windows
+          path: dist/GridRealtimeMonitor.exe
+          if-no-files-found: error
+          retention-days: 14
