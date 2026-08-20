@@ -203,8 +203,19 @@ def configure_logging(paths: AppPaths) -> logging.Logger:
     logger = logging.getLogger("grid_monitor")
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    if logger.handlers:
+    log_path = paths.log.resolve()
+    existing_file_handlers = [
+        handler for handler in logger.handlers
+        if isinstance(handler, logging.FileHandler)
+    ]
+    if existing_file_handlers and all(
+        Path(handler.baseFilename).resolve() == log_path and handler.stream is not None
+        for handler in existing_file_handlers
+    ):
         return logger
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
 
     class RedactingFormatter(logging.Formatter):
         def format(self, record: logging.LogRecord) -> str:
