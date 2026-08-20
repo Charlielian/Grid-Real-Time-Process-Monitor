@@ -1,0 +1,26 @@
+# 部署配置：修改后重启应用生效
+base_url: "https://nqi.gmcc.net:20443"
+web_host: "127.0.0.1"
+web_port: 5000
+poll_interval_seconds: 60
+heartbeat_interval_seconds: 300
+lookback_hours: 24
+page_size: 50
+auto_sync: true
+ca_bundle: null
+auto_claim_pending_tasks: false
+
+# 数据保留与 SQLite 维护；保留天数为 0 时表示永久保留
+work_order_retention_days: 90
+work_order_event_retention_days: 180
+sync_run_retention_days: 90
+database_cleanup_interval_seconds: 3600
+database_cleanup_batch_size: 500
+database_max_size_mb: 1024
+wal_max_size_mb: 256
+
+target_process_title: "微网格实时优化流程"
+target_process_key: "proc_wwg_ssyhlc"
+target_title_keywords:
+  - "阳江"
+  - "江门"

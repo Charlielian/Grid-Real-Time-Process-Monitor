@@ -1,0 +1,8 @@
+Flask>=3.0
+requests>=2.32
+beautifulsoup4>=4.12
+cryptography>=43
+keyring>=25
+PyYAML>=6.0
+pytest>=8.0
+waitress>=3.0

@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-header"><h1>监控总览</h1><button class="button" id="sync-now">立即同步</button></div>
+<div class="cards">
+  <div class="card metric"><span>工单总数</span><strong>{{ stats.total }}</strong></div>
+  <div class="card metric"><span>未办结</span><strong>{{ stats.active }}</strong></div>
+  <div class="card metric"><span>今日新增</span><strong>{{ stats.today }}</strong></div>
+</div>
+<div class="grid two-columns">
+  <section class="card"><h2>当前节点分布</h2><ul class="node-list">{% for item in stats.nodes %}<li><span>{{ item.node }}</span><b>{{ item.count }}</b></li>{% else %}<li class="muted">暂无数据</li>{% endfor %}</ul></section>
+  <section class="card"><h2>最近同步</h2>{% if latest_sync %}<p>开始：{{ latest_sync['started_at'] }}</p><p>结束：{{ latest_sync['finished_at'] or '进行中' }}</p><p>总数：{{ latest_sync['total'] }}，新增：{{ latest_sync['added'] }}，变更：{{ latest_sync['changed'] }}</p>{% else %}<p class="muted">尚未同步</p>{% endif %}<p id="sync-status" class="muted"></p></section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>{% endblock %}

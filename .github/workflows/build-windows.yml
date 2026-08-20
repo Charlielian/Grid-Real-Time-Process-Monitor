@@ -1,0 +1,100 @@
+name: Build Windows executables
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      GRID_MONITOR_DATA_DIR: ${{ github.workspace }}\.ci-data
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build one-file executable
+        shell: pwsh
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --name GridRealtimeMonitor
+          --workpath build/onefile --distpath dist/onefile
+          --add-data "config.yaml;."
+          --add-data "webapp/templates;webapp/templates"
+          --add-data "webapp/static;webapp/static"
+          --collect-submodules keyring.backends
+          --hidden-import keyring.backends.Windows
+          run.py
+
+      - name: Build directory executable
+        shell: pwsh
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onedir --name GridRealtimeMonitor
+          --workpath build/onedir --distpath dist/onedir
+          --add-data "config.yaml;."
+          --add-data "webapp/templates;webapp/templates"
+          --add-data "webapp/static;webapp/static"
+          --collect-submodules keyring.backends
+          --hidden-import keyring.backends.Windows
+          run.py
+
+      - name: Verify and archive executables
+        shell: pwsh
+        run: |
+          $oneFile = "dist/onefile/GridRealtimeMonitor.exe"
+          $oneDir = "dist/onedir/GridRealtimeMonitor"
+          $oneDirExe = Join-Path $oneDir "GridRealtimeMonitor.exe"
+          $oneDirInternal = Join-Path $oneDir "_internal"
+
+          if (-not (Test-Path $oneFile)) {
+            throw "PyInstaller did not produce $oneFile"
+          }
+          if (-not (Test-Path $oneDirExe)) {
+            throw "PyInstaller did not produce $oneDirExe"
+          }
+          foreach ($resource in @("config.yaml", "webapp/templates", "webapp/static")) {
+            $directPath = Join-Path $oneDir $resource
+            $internalPath = Join-Path $oneDirInternal $resource
+            if (-not (Test-Path $directPath) -and -not (Test-Path $internalPath)) {
+              throw "Directory build is missing bundled resource: $resource"
+            }
+          }
+
+          New-Item -ItemType Directory -Force -Path dist/packages | Out-Null
+          Compress-Archive -Path $oneDir -DestinationPath "dist/packages/GridRealtimeMonitor-windows-onedir.zip" -Force
+          Get-Item $oneFile, $oneDirExe, "dist/packages/GridRealtimeMonitor-windows-onedir.zip" |
+            Format-List FullName,Length
+
+      - name: Upload one-file executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GridRealtimeMonitor-windows-onefile
+          path: dist/onefile/GridRealtimeMonitor.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload directory executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GridRealtimeMonitor-windows-onedir
+          path: dist/packages/GridRealtimeMonitor-windows-onedir.zip
+          if-no-files-found: error
+          retention-days: 14

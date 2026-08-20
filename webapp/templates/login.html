@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}登录 - 微网格实时流程监控{% endblock %}
+{% block content %}
+<section class="card login-card">
+  <h1>登录大数据平台</h1>
+  <p id="message" class="muted">请输入账号并完成验证码验证</p>
+  {% if saved_session_available %}
+  <section id="saved-accounts" class="saved-accounts" aria-label="已保存的登录账号">
+    <p class="muted">检测到已保存 Cookies，可选择账号恢复登录。使用已保存 Cookies 登录无需重新输入验证码。</p>
+    {% for account in saved_accounts %}
+    <div class="saved-account" data-login-id="{{ account['login_id'] }}">
+      <div>
+        <strong>{{ account['display_name'] or account['login_id'] }}</strong>
+        <span class="muted">{{ account['login_id'] }}</span>
+        <span class="muted heartbeat-status">状态：{{ account['heartbeat_status'] }}</span>
+      </div>
+      <div class="button-row">
+        <button type="button" class="button secondary-button restore-account" data-login-id="{{ account['login_id'] }}">使用此账号</button>
+        <button type="button" class="button secondary-button heartbeat-account" data-login-id="{{ account['login_id'] }}">检查会话</button>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+  <form id="login-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>账号<input name="username" autocomplete="username" required></label>
+    <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+    <label>图形验证码</label>
+    <div class="captcha-row"><img id="captcha-image" alt="图形验证码"><button type="button" id="refresh-captcha">刷新</button></div>
+    <input name="captcha" required placeholder="请输入图片中的验证码">
+    <div class="button-row"><button type="button" id="verify-captcha">校验图形码</button><button type="button" id="send-sms" disabled>发送短信验证码</button></div>
+    <label>短信验证码<input name="sms_code" required></label>
+    <button type="submit" id="login-button">登录</button>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/login.js') }}"></script>{% endblock %}
