@@ -15,7 +15,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      GRID_MONITOR_DATA_DIR: ${{ runner.temp }}\\grid-monitor-data
+      GRID_MONITOR_DATA_DIR: ${{ github.workspace }}\\.ci-data
     steps:
       - name: Check out source
         uses: actions/checkout@v4
