@@ -130,11 +130,16 @@ def test_title_scope_and_scroll_layout(app) -> None:
     template_text = open(template, encoding="utf-8").read()
     assert "data-poll-interval" in template_text
     assert "new-orders-bubble" in template_text
+    assert 'id="orders-rows"' in template_text
+    assert 'id="orders-total"' in template_text
     login_template = open(app.root_path + "/templates/login.html", encoding="utf-8").read()
     assert "使用已保存 Cookies 登录" in login_template
     orders_js = open(app.root_path + "/static/js/orders.js", encoding="utf-8").read()
     assert "summary?.added" in orders_js
     assert "window.location.reload" in orders_js
+    assert "/api/v1/orders" in orders_js
+    assert "window.location.search" in orders_js
+    assert "replaceChildren" in orders_js
     css_text = open(css, encoding="utf-8").read()
     assert "overflow: auto" in css_text
     assert "position: fixed" in css_text

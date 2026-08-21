@@ -1,14 +1,14 @@
 {% extends 'base.html' %}
 {% block content %}
   <div class="orders-page" data-poll-interval="{{ poll_interval_seconds }}" data-auto-sync="{{ 'true' if auto_sync else 'false' }}">
-  <div class="page-header orders-header"><div><h1>工单列表</h1><span class="muted">仅显示标题包含「{{ '、'.join(title_keywords) }}」的工单</span></div><div class="orders-refresh"><span id="orders-refresh-status" class="muted">{% if auto_sync %}下次刷新：{{ poll_interval_seconds }} 秒{% else %}自动刷新已关闭{% endif %}</span><span class="muted">共 {{ total }} 条</span></div></div>
+  <div class="page-header orders-header"><div><h1>工单列表</h1><span class="muted">仅显示标题包含「{{ '、'.join(title_keywords) }}」的工单</span></div><div class="orders-refresh"><span id="orders-refresh-status" class="muted">{% if auto_sync %}下次刷新：{{ poll_interval_seconds }} 秒{% else %}自动刷新已关闭{% endif %}</span><span class="muted">共 <span id="orders-total">{{ total }}</span> 条</span></div></div>
   <form class="filters orders-filters" method="get">
     <input name="keyword" value="{{ filters.keyword }}" placeholder="编号、标题、处理人" aria-label="关键字">
     <select name="status" aria-label="状态"><option value="">全部状态</option><option value="active" {% if filters.status == 'active' %}selected{% endif %}>未办结</option><option value="completed" {% if filters.status == 'completed' %}selected{% endif %}>已办结</option></select>
     <input name="node" value="{{ filters.node }}" placeholder="当前节点" aria-label="当前节点">
     <button class="button" type="submit">筛选</button>
   </form>
-  <section class="card table-wrap orders-table-wrap"><table class="orders-table"><thead><tr><th>编号</th><th>标题</th><th>当前节点</th><th>状态</th><th>处理人</th><th>创建时间</th><th>操作</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row['number'] }}</td><td>{{ row['title'] }}</td><td>{{ row['current_node'] }}</td><td>{{ row['status'] }}</td><td>{{ row['assignee'] }}</td><td>{{ row['created_at'] }}</td><td><a href="{{ url_for('web.order_detail', order_id=row['order_id']) }}">详情</a></td></tr>{% else %}<tr><td colspan="7" class="muted">暂无工单</td></tr>{% endfor %}</tbody></table></section>
+  <section class="card table-wrap orders-table-wrap"><table class="orders-table"><thead><tr><th>编号</th><th>标题</th><th>当前节点</th><th>状态</th><th>处理人</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="orders-rows">{% for row in rows %}<tr><td>{{ row['number'] }}</td><td>{{ row['title'] }}</td><td>{{ row['current_node'] }}</td><td>{{ row['status'] }}</td><td>{{ row['assignee'] }}</td><td>{{ row['created_at'] }}</td><td><a href="{{ url_for('web.order_detail', order_id=row['order_id']) }}">详情</a></td></tr>{% else %}<tr><td colspan="7" class="muted">暂无工单</td></tr>{% endfor %}</tbody></table></section>
   {% if pages > 1 %}<div class="pagination orders-pagination">{% for number in range(1, pages + 1) %}<a class="{% if number == page %}active{% endif %}" href="{{ url_for('web.orders', page=number, page_size=page_size, keyword=filters.keyword, status=filters.status, node=filters.node) }}">{{ number }}</a>{% endfor %}</div>{% endif %}
 </div>
 <button type="button" id="new-orders-bubble" class="new-orders-bubble" hidden aria-label="查看新工单"><span id="new-orders-message"></span></button>

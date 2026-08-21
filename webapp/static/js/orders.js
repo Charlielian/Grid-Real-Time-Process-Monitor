@@ -3,7 +3,9 @@
   const status = document.querySelector('#orders-refresh-status');
   const bubble = document.querySelector('#new-orders-bubble');
   const message = document.querySelector('#new-orders-message');
-  if (!page || !status || !bubble || !message) return;
+  const rows = document.querySelector('#orders-rows');
+  const total = document.querySelector('#orders-total');
+  if (!page || !status || !bubble || !message || !rows || !total) return;
 
   const interval = Math.max(5, Number.parseInt(page.dataset.pollInterval || '60', 10) || 60);
   const autoSync = page.dataset.autoSync === 'true';
@@ -49,6 +51,36 @@
     message.textContent = `发现 ${count} 条新工单，点击查看`;
     bubble.hidden = false;
   };
+  const refreshOrders = async () => {
+    const query = new URLSearchParams(window.location.search);
+    const result = await request(`/api/v1/orders${query.toString() ? `?${query.toString()}` : ''}`);
+    rows.replaceChildren();
+    for (const item of result.items || []) {
+      const row = document.createElement('tr');
+      for (const value of [item.number, item.title, item.current_node, item.status, item.assignee, item.created_at]) {
+        const cell = document.createElement('td');
+        cell.textContent = value || '';
+        row.append(cell);
+      }
+      const actionCell = document.createElement('td');
+      const link = document.createElement('a');
+      link.href = `/orders/${encodeURIComponent(item.order_id)}`;
+      link.textContent = '详情';
+      actionCell.append(link);
+      row.append(actionCell);
+      rows.append(row);
+    }
+    if (!result.items?.length) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 7;
+      cell.className = 'muted';
+      cell.textContent = '暂无工单';
+      row.append(cell);
+      rows.append(row);
+    }
+    total.textContent = String(result.total ?? 0);
+  };
   const pollJob = async (jobId) => {
     if (jobId !== currentJobId || polling || document.hidden) return;
     polling = true;
@@ -63,6 +95,11 @@
       }
       polling = false;
       if (current.status === 'succeeded') {
+        try {
+          await refreshOrders();
+        } catch (error) {
+          status.textContent = error.message || '工单列表刷新失败，请稍后重试';
+        }
         const added = Number(current.summary?.added || 0);
         if (added > 0) showNewOrders(added);
       } else if (current.status === 'failed' || current.status === 'cancelled') {
