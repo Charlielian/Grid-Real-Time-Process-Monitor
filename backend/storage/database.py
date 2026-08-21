@@ -78,6 +78,7 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_work_orders_updated_at ON work_orders(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_work_orders_task_id ON work_orders(task_id);
                 CREATE INDEX IF NOT EXISTS idx_work_orders_status ON work_orders(status);
                 CREATE INDEX IF NOT EXISTS idx_work_orders_node ON work_orders(current_node);
                 CREATE TABLE IF NOT EXISTS work_order_events (

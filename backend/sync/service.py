@@ -5,7 +5,7 @@ from typing import Callable
 
 from backend.platform.client import PlatformClient
 from backend.storage.database import Database
-from shared.config import AppConfig, matches_title_keywords
+from shared.config import AppConfig
 from shared.models import SyncSummary, UserInfo, WorkOrder
 
 
@@ -45,13 +45,10 @@ def sync_work_orders(
                 user.login_id,
                 page_index=page_index,
                 page_size=config.page_size,
-                start_time=start.isoformat(),
-                end_time=started.isoformat(),
+                start_time=start.strftime("%Y-%m-%d %H:%M:%S"),
+                end_time=started.strftime("%Y-%m-%d %H:%M:%S"),
             )
-            batch = [
-                order for order in page.items
-                if matches_title_keywords(order.title, config.target_title_keywords)
-            ]
+            batch = list(page.items)
             for offset in range(0, len(batch), SYNC_BATCH_SIZE):
                 if cancelled and cancelled():
                     break

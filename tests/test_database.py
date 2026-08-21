@@ -27,6 +27,24 @@ def test_database_filters_by_title_keyword(tmp_path: Path) -> None:
     assert db.count_work_orders(title_keywords=("阳江", "江门")) == 2
     assert db.get_work_order("other", title_keywords=("阳江", "江门")) is None
     assert db.dashboard_stats(title_keywords=("阳江", "江门"))["total"] == 2
+def test_database_filters_by_city_and_date_range(tmp_path: Path) -> None:
+    db = Database(tmp_path / "city-date.sqlite3")
+    first = make_order(order_id="gz", title="广州微网格优化")
+    object.__setattr__(first, "created_at", "2026-08-20 00:00:00")
+    second = make_order(order_id="sz", title="深圳微网格优化")
+    object.__setattr__(second, "created_at", "2026-08-20 23:59:59.999")
+    third = make_order(order_id="other", title="佛山微网格优化")
+    object.__setattr__(third, "created_at", "2026-08-21 00:00:00")
+    db.upsert_orders([first, second, third])
+
+    assert [row["order_id"] for row in db.list_work_orders(
+        title_keywords=("广州", "深圳"),
+        start_time="2026-08-20 00:00:00",
+        end_time="2026-08-21 00:00:00",
+    )] == ["sz", "gz"]
+    assert db.count_work_orders(title_keywords=()) == 3
+
+
 def test_database_upsert_orders_batches_in_one_transaction(tmp_path: Path) -> None:
     db = Database(tmp_path / "batch.sqlite3")
     orders = [make_order(order_id=f"id-{index}") for index in range(3)]

@@ -98,6 +98,53 @@ def test_config_store_legacy_keyword_is_supported(tmp_path) -> None:
     assert ConfigStore(paths).load().target_title_keywords == ("广州",)
 
 
+def test_config_store_save_round_trips_and_preserves_comments(tmp_path) -> None:
+    paths = AppPaths(tmp_path / "data")
+    paths.yaml = tmp_path / "config.yaml"
+    paths.yaml.write_text(
+        "# 配置说明\nbase_url: https://nqi.gmcc.net:20443\n"
+        "web_host: 127.0.0.1\nweb_port: 5000\n"
+        "poll_interval_seconds: 60\nheartbeat_interval_seconds: 300\n"
+        "lookback_hours: 24\npage_size: 50\nauto_sync: false\n"
+        "ca_bundle: null\ntarget_process_title: 微网格实时优化流程\n"
+        "target_process_key: proc_wwg_ssyhlc\ntarget_title_keywords:\n  - 阳江\n"
+        "auto_claim_pending_tasks: false\nwork_order_retention_days: 90\n"
+        "work_order_event_retention_days: 180\nsync_run_retention_days: 90\n"
+        "database_cleanup_interval_seconds: 3600\ndatabase_cleanup_batch_size: 500\n"
+        "database_max_size_mb: 1024\nwal_max_size_mb: 256\n",
+        encoding="utf-8",
+    )
+    store = ConfigStore(paths)
+
+    store.save(with_updates := AppConfig(auto_sync=True, target_title_keywords=("广州",)))
+
+    loaded = store.load()
+    assert loaded.target_title_keywords == AppConfig().target_title_keywords
+    saved = paths.yaml.read_text(encoding="utf-8")
+    assert "target_title_keywords" not in saved
+    assert "target_title_keyword" not in saved
+    assert "# 配置说明" in saved
+    assert not list(tmp_path.glob(".*.config.yaml.*.tmp"))
+
+
+def test_config_store_save_cleans_temp_file_on_replace_failure(tmp_path, monkeypatch) -> None:
+    paths = AppPaths(tmp_path / "data")
+    paths.yaml = tmp_path / "config.yaml"
+    original = "base_url: https://example.test\n"
+    paths.yaml.write_text(original, encoding="utf-8")
+    store = ConfigStore(paths)
+
+    def fail_replace(_source, _target):
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr("shared.config.os.replace", fail_replace)
+    with pytest.raises(OSError, match="配置文件写入失败"):
+        store.save(AppConfig())
+
+    assert paths.yaml.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob(".*.config.yaml.*.tmp"))
+
+
 def test_app_config_rejects_invalid_deployment_values() -> None:
     with pytest.raises(ValueError):
         AppConfig(web_port=0)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -55,9 +57,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     registry = SessionRegistry(config, logger, ttl_seconds=int(app.config.get("AUTH_CONTEXT_TTL", 1800)))
     auth = WebAuthService(registry, logger, database)
     jobs = SyncJobManager(database, logger)
-    registry.set_remove_callback(lambda context_id: jobs.cancel_context(context_id, wait=True))
+    registry.set_remove_callback(lambda context_id, timeout=None: jobs.cancel_context(
+        context_id, wait=True, timeout=timeout
+    ))
     monitor = SessionMonitor(database, config, logger)
     maintenance = DatabaseMaintenanceService(database, config, logger, autostart=not bool(app.config.get("TESTING")))
+    if not app.config.get("TESTING"):
+        monitor.start()
     app.extensions.update({
         "paths": paths,
         "logger": logger,
@@ -79,11 +85,27 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if shutdown_state["closed"]:
                 return
             shutdown_state["closed"] = True
-        jobs.shutdown()
-        monitor.shutdown()
-        maintenance.shutdown()
-        registry.shutdown()
-        database.close()
+        deadline = time.monotonic() + 10
+        try:
+            jobs.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("同步任务关闭失败")
+        try:
+            monitor.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("会话监控关闭失败")
+        try:
+            maintenance.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("数据库维护关闭失败")
+        try:
+            registry.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("会话注册表关闭失败")
+        try:
+            database.close()
+        except Exception:
+            logger.exception("数据库关闭失败")
 
     app.extensions["shutdown"] = shutdown_resources
 

@@ -21,6 +21,10 @@ def app():
             "SECRET_KEY": "test-secret",
             "APP_CONFIG": AppConfig(),
         })
+        application.extensions["config_store"].paths.yaml = Path(directory) / "config.yaml"
+        application.extensions["config_store"].paths.yaml.write_text(
+            "# test configuration\n", encoding="utf-8"
+        )
         yield application
         application.extensions["shutdown"]()
         for handler in application.extensions["logger"].handlers:
@@ -30,7 +34,32 @@ def app():
         application.extensions["logger"].handlers.clear()
 
 
-def test_parse_bool_accepts_supported_values() -> None:
+def test_order_filter_parser_preserves_multiple_cities_and_full_end_day() -> None:
+    from werkzeug.datastructures import MultiDict
+    from shared.filters import parse_order_filters
+
+    filters = parse_order_filters(MultiDict([
+        ("city", "广州"),
+        ("city", "深圳"),
+        ("start_time", "2026-08-20"),
+        ("end_time", "2026-08-20"),
+    ]))
+    assert filters["city"] == ("广州", "深圳")
+    assert filters["start_time"] == "2026-08-20 00:00:00"
+    assert filters["end_time"] == "2026-08-21 00:00:00"
+
+
+def test_order_filter_parser_rejects_invalid_city_and_date() -> None:
+    from werkzeug.datastructures import MultiDict
+    from shared.filters import parse_order_filters
+
+    import pytest
+    with pytest.raises(ValueError, match="不支持的地市"):
+        parse_order_filters(MultiDict([("city", "不存在")]))
+    with pytest.raises(ValueError, match="创建日期格式无效"):
+        parse_order_filters(MultiDict([("start_time", "not-a-date")]))
+
+
     assert _parse_bool(True, "auto_sync") is True
     assert _parse_bool(False, "auto_sync") is False
     assert _parse_bool(" TRUE ", "auto_sync") is True
@@ -152,6 +181,7 @@ def test_frontend_uses_shared_api_and_handles_failures(app) -> None:
     assert "AbortController" in api
     assert "response.status === 401" in api
     assert "2 ** attempt" in api
+    assert "Retry-After" in api
     assert "Accept" in api
     for name in ("login.js", "dashboard.js", "orders.js", "pending_tasks.js"):
         assert "fetch(" not in open(static + name, encoding="utf-8").read()
@@ -166,6 +196,10 @@ def test_pending_page_requires_auth_and_has_navigation(app) -> None:
     assert "待领取" in template
     pending = open(app.root_path + "/templates/pending_tasks.html", encoding="utf-8").read()
     assert "人工领取" in pending
+    pending_js = open(app.root_path + "/static/js/pending_tasks.js", encoding="utf-8").read()
+    assert "Number.isFinite(configuredPollInterval)" in pending_js
+    assert "reloadRequested" in pending_js
+    assert "city" in pending
 
 
 def test_pending_api_requires_auth_and_csrf(app) -> None:

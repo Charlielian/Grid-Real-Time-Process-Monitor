@@ -1,13 +1,14 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="pending-page" data-page-size="50" data-poll-interval="{{ poll_interval_seconds }}" data-auto-claim="{{ 'true' if auto_claim_pending_tasks else 'false' }}">
+<div class="pending-page" data-page-size="{{ page_size }}" data-poll-interval="{{ poll_interval_seconds }}" data-auto-claim="{{ 'true' if auto_claim_pending_tasks else 'false' }}">
   <div class="page-header">
     <div>
       <h1>待领取任务</h1>
-      <span class="muted">仅显示标题包含「{{ '、'.join(target_title_keywords) }}」的微网格实时优化流程任务；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
+      <span class="muted">地市按标题匹配；不选择地市时显示全部任务；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
     </div>
     <button type="button" class="button" id="pending-refresh">刷新</button>
   </div>
+  <form class="filters" method="get"><select name="city" multiple size="4" aria-label="地市">{% for city in cities %}<option value="{{ city }}" {% if city in selected_cities %}selected{% endif %}>{{ city }}</option>{% endfor %}</select><button class="button" type="submit">筛选</button></form>
   <div id="pending-message" class="muted" role="status"></div>
   <noscript>人工领取</noscript>
   <section class="card table-wrap pending-table-wrap">

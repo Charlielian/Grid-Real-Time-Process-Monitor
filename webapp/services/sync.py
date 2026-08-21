@@ -141,6 +141,7 @@ class SyncJobManager:
         return True
 
     def cancel_context(self, context_id: str, *, wait: bool = True, timeout: float | None = None) -> bool:
+        deadline = time.monotonic() + timeout if timeout is not None else None
         with self._lock:
             job_id = self._context_jobs.get(context_id)
             job = self._jobs.get(job_id or "")
@@ -150,7 +151,11 @@ class SyncJobManager:
             target_job_id = job.job_id
         self.cancel(target_job_id)
         if wait and future is not None and not future.cancelled():
-            future.result(timeout=timeout)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                future.result(timeout=remaining)
+            except TimeoutError:
+                self.logger.warning("同步任务取消等待超时: job_id=%s", target_job_id)
         return True
 
     def _set_running(self, job: SyncJob) -> bool:
@@ -217,9 +222,11 @@ class SyncJobManager:
                 return
             self._closed = True
             jobs = [job for job in self._jobs.values() if job.status in {"queued", "running"}]
+        deadline = time.monotonic() + timeout if timeout is not None else None
         self._cleanup_stop.set()
         if self._cleanup_thread is not threading.current_thread():
-            self._cleanup_thread.join(timeout=timeout)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            self._cleanup_thread.join(timeout=remaining)
         futures: list[Future[Any]] = []
         for job in jobs:
             self.cancel(job.job_id)
@@ -231,6 +238,11 @@ class SyncJobManager:
                 elif not future.done():
                     futures.append(future)
         for future in futures:
-            future.result(timeout=timeout)
-        self.executor.shutdown(wait=True, cancel_futures=True)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                future.result(timeout=remaining)
+            except TimeoutError:
+                self.logger.warning("同步任务关闭等待超时")
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        self.executor.shutdown(wait=remaining is None, cancel_futures=True)
         self._cleanup_jobs()

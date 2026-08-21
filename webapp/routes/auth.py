@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import requests
+
 from flask import Blueprint, current_app, jsonify, redirect, request, session, url_for
 
 from backend.auth.cas_client import AuthError, SessionExpired
+from backend.platform.client import PlatformError
 from webapp.routes.decorators import check_csrf
 
 bp = Blueprint("auth", __name__)
@@ -31,9 +34,13 @@ def captcha():
     context = _context()
     try:
         image = current_app.extensions["web_auth"].captcha(context)
+    except SessionExpired:
+        return jsonify({"error": "unauthorized", "message": "登录会话已失效"}), 401
+    except (PlatformError, requests.RequestException):
+        return jsonify({"error": "upstream_unavailable", "message": "验证码获取失败，请稍后重试"}), 502
     except Exception:
         current_app.extensions["logger"].exception("获取验证码失败")
-        return jsonify({"error": "upstream_unavailable", "message": "验证码获取失败"}), 502
+        return jsonify({"error": "internal_error", "message": "验证码获取失败"}), 500
     response = current_app.response_class(image, mimetype="image/jpeg")
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -109,10 +116,14 @@ def restore_saved_session():
     context = _context()
     try:
         user = auth.restore(context, login_id)
-    except Exception:
-        current_app.extensions["logger"].exception("恢复保存会话失败")
+    except SessionExpired:
         session.pop("auth_context_id", None)
         return jsonify({"ok": False, "message": "保存的 Cookies 已失效，请重新登录"}), 401
+    except (PlatformError, requests.RequestException):
+        return jsonify({"ok": False, "message": "网络暂时不可用，请稍后重试"}), 503
+    except Exception:
+        current_app.extensions["logger"].exception("恢复保存会话失败")
+        return jsonify({"ok": False, "message": "恢复登录会话失败，请稍后重试"}), 500
     session.permanent = True
     session["saved_login_id"] = user.login_id
     return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.dashboard")})

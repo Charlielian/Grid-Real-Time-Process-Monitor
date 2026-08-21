@@ -29,9 +29,10 @@
 
   const request = async (url, options = {}) => {
     const method = (options.method || 'GET').toUpperCase();
-    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 10000;
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : 10000;
     const retries = Number.isFinite(options.retries) ? Math.max(0, options.retries) : 2;
-    const retryable = options.retry === true || (options.retry !== false && ['GET', 'HEAD'].includes(method));
+    const retryableMethod = options.retry !== false && (options.retry === true || ['GET', 'HEAD'].includes(method));
+    const externalSignal = options.signal;
     const headers = new Headers(options.headers || {});
     headers.set('Accept', 'application/json');
     if (options.body !== undefined && !isBodyInit(options.body)
@@ -41,9 +42,24 @@
     }
     if (!headers.has('X-CSRF-Token') && !['GET', 'HEAD'].includes(method)) headers.set('X-CSRF-Token', csrf());
 
+    const retryAfterMs = (response) => {
+      const value = response.headers.get('Retry-After');
+      if (!value) return 0;
+      const seconds = Number(value);
+      if (Number.isFinite(seconds)) return Math.min(30000, Math.max(0, seconds * 1000));
+      const timestamp = Date.parse(value);
+      return Number.isNaN(timestamp) ? 0 : Math.min(30000, Math.max(0, timestamp - Date.now()));
+    };
+    const canRetryResponse = (status) => [408, 425, 429, 500, 502, 503, 504].includes(status);
+
     for (let attempt = 0; ; attempt += 1) {
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      const abort = () => controller.abort();
+      let timeout = window.setTimeout(abort, timeoutMs);
+      if (externalSignal) {
+        if (externalSignal.aborted) controller.abort();
+        else externalSignal.addEventListener('abort', abort, {once: true});
+      }
       try {
         const response = await fetch(url, {...options, method, headers, cache: options.cache || 'no-store', signal: controller.signal});
         const text = await response.text();
@@ -54,10 +70,15 @@
           throw new ApiError((result && result.message) || '登录已失效，请重新登录', {status: 401, code: (result && result.error) || 'unauthorized'});
         }
         if (!response.ok || (result && result.ok === false)) {
-          throw new ApiError((result && result.message) || (text && text.slice(0, 160)) || '请求失败', {
+          const error = new ApiError((result && result.message) || (text && text.slice(0, 160)) || '请求失败', {
             status: response.status,
             code: (result && result.error) || 'request_failed',
           });
+          if (retryableMethod && canRetryResponse(response.status) && attempt < retries) {
+            await sleep(Math.max(Math.min(4000, 250 * (2 ** attempt)), retryAfterMs(response)));
+            continue;
+          }
+          throw error;
         }
         if (result === null && text) throw new ApiError('服务器返回了无法解析的响应', {status: response.status, code: 'invalid_json'});
         return result;
@@ -65,10 +86,12 @@
         const apiError = error instanceof ApiError
           ? error
           : new ApiError(error.name === 'AbortError' ? '请求超时，请稍后重试' : '网络请求失败', {code: error.name === 'AbortError' ? 'timeout' : 'network', cause: error});
-        if (apiError.status === 401 || !retryable || attempt >= retries) throw apiError;
+        const abortedExternally = externalSignal?.aborted;
+        if (abortedExternally || !retryableMethod || attempt >= retries || apiError.status === 401) throw apiError;
         await sleep(Math.min(4000, 250 * (2 ** attempt)));
       } finally {
         window.clearTimeout(timeout);
+        if (externalSignal) externalSignal.removeEventListener('abort', abort);
       }
     }
   };

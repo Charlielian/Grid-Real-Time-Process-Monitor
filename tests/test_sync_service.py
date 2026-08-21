@@ -77,7 +77,7 @@ def _wait_for_terminal(manager: SyncJobManager, job_id: str):
     raise AssertionError("同步任务未在期限内结束")
 
 
-def test_sync_only_persists_target_title(tmp_path: Path) -> None:
+def test_sync_persists_all_target_process_orders(tmp_path: Path) -> None:
     database = Database(tmp_path / "sync.sqlite3")
     summary = sync_work_orders(
         FakeClient(),
@@ -86,10 +86,10 @@ def test_sync_only_persists_target_title(tmp_path: Path) -> None:
         AppConfig(target_title_keywords=("广州",)),
     )
 
-    assert summary.total == 1
-    assert database.count_work_orders() == 1
+    assert summary.total == 2
+    assert database.count_work_orders() == 2
     assert database.get_work_order("target") is not None
-    assert database.get_work_order("other") is None
+    assert database.get_work_order("other") is not None
 
 
 def test_sync_uses_batch_upserts_across_pages(tmp_path: Path) -> None:
@@ -114,9 +114,9 @@ def test_sync_uses_batch_upserts_across_pages(tmp_path: Path) -> None:
     )
 
     assert client.calls == [1, 2]
-    assert calls == [1, 2]
-    assert (summary.total, summary.added, summary.changed) == (3, 3, 0)
-    assert database.count_work_orders() == 3
+    assert calls == [2, 2]
+    assert (summary.total, summary.added, summary.changed) == (4, 4, 0)
+    assert database.count_work_orders() == 4
     assert database.latest_sync_run()["error"] is None
 
 

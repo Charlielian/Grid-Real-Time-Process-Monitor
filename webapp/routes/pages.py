@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
-from shared.config import with_config_updates
+from shared.config import GUANGDONG_CITIES, normalize_cities, with_config_updates
+from shared.filters import parse_order_filters
 from webapp.routes.decorators import check_csrf, web_login_required
 
 bp = Blueprint("web", __name__)
@@ -38,8 +39,7 @@ def login() -> str:
 @web_login_required
 def dashboard() -> str:
     from flask import current_app
-    config = current_app.extensions["app_config"]
-    stats = current_app.extensions["database"].dashboard_stats(title_keywords=config.target_title_keywords)
+    stats = current_app.extensions["database"].dashboard_stats()
     latest = current_app.extensions["database"].latest_sync_run()
     return render_template("dashboard.html", stats=stats, latest_sync=latest)
 
@@ -49,11 +49,17 @@ def dashboard() -> str:
 def pending_tasks() -> str:
     from flask import current_app
     config = current_app.extensions["app_config"]
+    try:
+        selected_cities = normalize_cities(request.args.getlist("city"))
+    except ValueError as exc:
+        return render_template("not_found.html", message=str(exc)), 400
     return render_template(
         "pending_tasks.html",
         poll_interval_seconds=config.poll_interval_seconds,
+        page_size=config.page_size,
         auto_claim_pending_tasks=config.auto_claim_pending_tasks,
-        target_title_keywords=config.target_title_keywords,
+        cities=GUANGDONG_CITIES,
+        selected_cities=selected_cities,
     )
 
 
@@ -65,13 +71,15 @@ def orders() -> str:
     db = current_app.extensions["database"]
     page = max(1, request.args.get("page", 1, type=int))
     page_size = min(500, max(10, request.args.get("page_size", 50, type=int)))
-    filters = {
-        "keyword": request.args.get("keyword", "", type=str).strip(),
-        "status": request.args.get("status", "", type=str).strip(),
-        "node": request.args.get("node", "", type=str).strip(),
-    }
-    rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=config.target_title_keywords, **filters)
-    total = db.count_work_orders(title_keywords=config.target_title_keywords, **filters)
+    try:
+        filters = parse_order_filters(request.args)
+    except ValueError as exc:
+        return render_template("not_found.html", message=str(exc)), 400
+    city_keywords = filters.pop("city")
+    filters.pop("start_date")
+    filters.pop("end_date")
+    rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=city_keywords, **filters)
+    total = db.count_work_orders(title_keywords=city_keywords, **filters)
     pages = max(1, (total + page_size - 1) // page_size)
     return render_template(
         "orders.html",
@@ -80,8 +88,9 @@ def orders() -> str:
         page=page,
         pages=pages,
         page_size=page_size,
-        filters=filters,
-        title_keywords=config.target_title_keywords,
+        filters={**filters, "city": city_keywords, "start_date": request.args.get("start_time", ""), "end_date": request.args.get("end_time", "")},
+        cities=GUANGDONG_CITIES,
+        selected_cities=city_keywords,
         poll_interval_seconds=config.poll_interval_seconds,
         auto_sync=config.auto_sync,
     )
@@ -91,9 +100,8 @@ def orders() -> str:
 @web_login_required
 def order_detail(order_id: str) -> str:
     from flask import current_app
-    config = current_app.extensions["app_config"]
     db = current_app.extensions["database"]
-    row = db.get_work_order(order_id, title_keywords=config.target_title_keywords)
+    row = db.get_work_order(order_id)
     if row is None:
         return render_template("not_found.html", message="工单不存在"), 404
     return render_template("order_detail.html", order=row, events=db.list_events(order_id))
@@ -122,6 +130,9 @@ def settings() -> str:
         except (TypeError, ValueError):
             current_app.extensions["logger"].exception("更新页面设置失败")
             flash("设置参数无效，请检查输入", "error")
+        except OSError:
+            current_app.extensions["logger"].exception("配置文件写入失败")
+            flash("配置文件无法写入，请检查 config.yaml 所在目录权限或文件占用", "error")
         return redirect(url_for("web.settings"))
     return render_template("settings.html", config=current_app.extensions["app_config"])
 

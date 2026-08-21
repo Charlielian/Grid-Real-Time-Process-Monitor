@@ -84,16 +84,24 @@ class SessionRegistry:
         while not self._cleanup_stop.wait(interval):
             self.cleanup()
 
-    def _dispose(self, context: WebAuthContext) -> None:
+    def _dispose(self, context: WebAuthContext, *, timeout: float | None = None) -> None:
         callback = self._remove_callback
         if callback is not None:
-            callback(context.context_id)
+            try:
+                callback(context.context_id, timeout=timeout)
+            except TypeError:
+                callback(context.context_id)
+            except Exception:
+                self.logger.exception("清理会话关联同步任务失败: context_id=%s", context.context_id)
         context.user = None
         context.captcha_page = None
         context.captcha_verified = False
         context.username = ""
-        context.session.cookies.clear()
-        context.session.close()
+        try:
+            context.session.cookies.clear()
+            context.session.close()
+        except Exception:
+            self.logger.exception("关闭登录会话失败: context_id=%s", context.context_id)
 
     def create(self) -> WebAuthContext:
         with self._lock:
@@ -146,18 +154,21 @@ class SessionRegistry:
         for context in expired:
             self._dispose(context)
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float | None = None) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             contexts = list(self._contexts.values())
             self._contexts.clear()
+        deadline = time.monotonic() + timeout if timeout is not None else None
         self._cleanup_stop.set()
         if self._cleanup_thread is not threading.current_thread():
-            self._cleanup_thread.join(timeout=5)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            self._cleanup_thread.join(timeout=remaining)
         for context in contexts:
-            self._dispose(context)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            self._dispose(context, timeout=remaining)
 
 
 class WebAuthService:

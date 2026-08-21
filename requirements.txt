@@ -4,5 +4,6 @@ beautifulsoup4>=4.12
 cryptography>=43
 keyring>=25
 PyYAML>=6.0
+ruamel.yaml>=0.18
 pytest>=8.0
 waitress>=3.0

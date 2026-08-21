@@ -14,8 +14,6 @@ if __name__ == "__main__":
             "禁止直接使用 Flask 开发服务器或多 worker 部署"
         )
     config = app.extensions["app_config"]
-    monitor = app.extensions["session_monitor"]
-    monitor.start()
     try:
         app.run(host=config.web_host, port=config.web_port, debug=False)
     finally:

@@ -34,6 +34,7 @@ class SessionMonitor:
         self._account_locks: dict[str, threading.Lock] = {}
         self._sessions: dict[str, requests.Session] = {}
         self._thread: threading.Thread | None = None
+        self._closed = False
 
     def update_config(self, config: AppConfig) -> None:
         with self._lock:
@@ -60,6 +61,8 @@ class SessionMonitor:
 
     def _session_for(self, login_id: str) -> requests.Session:
         with self._lock:
+            if self._closed:
+                raise RuntimeError("会话监控已关闭")
             session = self._sessions.get(login_id)
             if session is None:
                 session = SessionFactory(self.config, self.logger).create()
@@ -83,6 +86,9 @@ class SessionMonitor:
         """Validate one saved account and return its redacted database record."""
         if not login_id:
             return None
+        with self._lock:
+            if self._closed or self._stop.is_set():
+                return None
         account = self.database.get_saved_account(login_id)
         if account is None:
             return None
@@ -114,19 +120,35 @@ class SessionMonitor:
             return dict(self.database.get_saved_account(login_id))
 
     def _run_cycle(self) -> None:
-        for account in self.database.list_saved_accounts():
+        try:
+            accounts = self.database.list_saved_accounts()
+        except Exception:
+            self.logger.exception("读取保存账号失败")
+            return
+        for account in accounts:
             if self._stop.is_set():
                 return
             if account["heartbeat_status"] == "expired":
                 continue
-            self.check_now(str(account["login_id"]))
+            login_id = str(account["login_id"])
+            try:
+                self.check_now(login_id)
+            except Exception:
+                self.logger.exception("账号心跳检查失败: login_id=%s", login_id)
 
     def _close_sessions(self) -> None:
         with self._lock:
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
-        for session in sessions:
-            session.close()
+            login_ids = list(self._sessions)
+        for login_id in login_ids:
+            lock = self._lock_for(login_id)
+            with lock:
+                with self._lock:
+                    session = self._sessions.pop(login_id, None)
+                if session is not None:
+                    try:
+                        session.close()
+                    except Exception:
+                        self.logger.exception("关闭心跳会话失败: login_id=%s", login_id)
 
     def _run(self) -> None:
         try:
@@ -138,6 +160,8 @@ class SessionMonitor:
 
     def start(self) -> None:
         with self._lock:
+            if self._closed:
+                return
             if self._thread and self._thread.is_alive():
                 return
             self._stop.clear()
@@ -145,8 +169,12 @@ class SessionMonitor:
             self._thread.start()
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        self._stop.set()
-        thread = self._thread
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._stop.set()
+            thread = self._thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=timeout)
         if thread and thread.is_alive():

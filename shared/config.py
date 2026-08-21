@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 import os
 import re
+import stat
+import tempfile
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError as RuamelYAMLError
 
 
 APP_NAME = "GridRealtimeMonitor"
@@ -20,6 +24,29 @@ TARGET_MODULE = "pro-wfm-biz-client-fak"
 DEFAULT_TARGET_PROCESS_TITLE = "微网格实时优化流程"
 DEFAULT_TARGET_PROCESS_KEY = "proc_wwg_ssyhlc"
 DEFAULT_TARGET_TITLE_KEYWORDS = ("阳江",)
+GUANGDONG_CITIES = (
+    "广州", "深圳", "珠海", "汕头", "佛山", "韶关", "湛江", "肇庆", "江门", "茂名",
+    "惠州", "梅州", "汕尾", "河源", "阳江", "清远", "东莞", "中山", "潮州", "揭阳", "云浮",
+)
+
+
+def normalize_cities(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = (value,)
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("city 必须是广东地市列表")
+    normalized: list[str] = []
+    for city in value:
+        if not isinstance(city, str) or not city.strip():
+            raise ValueError("city 必须是广东地市列表")
+        city = city.strip()
+        if city not in GUANGDONG_CITIES:
+            raise ValueError(f"不支持的地市: {city}")
+        if city not in normalized:
+            normalized.append(city)
+    return tuple(normalized)
 
 
 def normalize_title_keywords(value: Any) -> tuple[str, ...]:
@@ -276,24 +303,73 @@ class ConfigStore:
             raise ValueError(f"配置文件为空或无效: {self.paths.yaml}")
         values: dict[str, Any] = {}
         self._apply_source(values, raw, allowed_keys)
-        missing = sorted(allowed_keys - set(values))
+        missing = sorted((allowed_keys - {"target_title_keywords"}) - set(values))
         if missing:
             raise ValueError(f"配置文件缺少字段: {', '.join(missing)}")
         config = AppConfig(**values)
         self.logger.info(
-            "配置已加载: path=%s target_title_keywords=%s data_dir=%s",
-            self.paths.yaml.resolve(), list(config.target_title_keywords), self.paths.root.resolve(),
+            "配置已加载: path=%s data_dir=%s",
+            self.paths.yaml.resolve(), self.paths.root.resolve(),
         )
         return config
 
     def save(self, config: AppConfig) -> None:
+        target = self.paths.yaml
         payload = config_to_dict(config)
-        temp = self.paths.yaml.with_suffix(".tmp")
-        temp.write_text(
-            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
-        os.replace(temp, self.paths.yaml)
+        document: Any
+        if target.exists():
+            try:
+                roundtrip_yaml = YAML(typ="rt")
+                roundtrip_yaml.preserve_quotes = True
+                with target.open("r", encoding="utf-8") as source:
+                    document = roundtrip_yaml.load(source)
+                if not isinstance(document, dict):
+                    document = {}
+            except (OSError, TypeError, ValueError, yaml.YAMLError, RuamelYAMLError):
+                document = {}
+        else:
+            document = {}
+
+        for key, value in payload.items():
+            document[key] = value
+        if isinstance(document, dict):
+            document.pop("target_title_keyword", None)
+            document.pop("target_title_keywords", None)
+
+        parent = target.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        original_mode: int | None = None
+        try:
+            original_mode = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            pass
+
+        temp_name: str | None = None
+        try:
+            file_descriptor, temp_name = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".tmp", dir=parent
+            )
+            with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as stream:
+                roundtrip_yaml = YAML(typ="rt")
+                roundtrip_yaml.preserve_quotes = True
+                roundtrip_yaml.default_flow_style = False
+                roundtrip_yaml.allow_unicode = True
+                roundtrip_yaml.dump(document, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if original_mode is not None:
+                os.chmod(temp_name, original_mode)
+            os.replace(temp_name, target)
+            temp_name = None
+        except OSError as exc:
+            self.logger.exception("配置文件写入失败: path=%s", target.resolve())
+            raise OSError(f"配置文件写入失败: {target.resolve()}: {exc}") from exc
+        finally:
+            if temp_name:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
 
 
 SENSITIVE_KEY_RE = re.compile(
@@ -393,7 +469,6 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
         "ca_bundle": config.ca_bundle,
         "target_process_title": config.target_process_title,
         "target_process_key": config.target_process_key,
-        "target_title_keywords": list(config.target_title_keywords),
         "auto_claim_pending_tasks": config.auto_claim_pending_tasks,
         "work_order_retention_days": config.work_order_retention_days,
         "work_order_event_retention_days": config.work_order_event_retention_days,

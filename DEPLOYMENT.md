@@ -52,7 +52,9 @@ uwsgi --http ${GRID_MONITOR_HOST:-127.0.0.1}:${GRID_MONITOR_PORT:-5000} --proces
 
 ## 会话监控生命周期
 
-当前 `run.py` 直接运行模式会启动并在退出时关闭 `SessionMonitor`。通过外部 WSGI 服务器导入 `run:app` 时，应用对象可以正常提供请求服务，但不会执行 `run.py` 的 `__main__` 启动分支。若生产环境需要自动会话心跳，请使用单 worker 的服务管理方式，并在部署前确认所需的心跳启动/停止生命周期已接入；不要为此启动第二个应用 worker。
+`create_app()` 在非测试环境导入时会自动启动 `SessionMonitor` 和数据库维护线程；因此 Waitress、Gunicorn、uWSGI 导入 `run:app` 时也会启动心跳。应用对象暴露的 `app.extensions["shutdown"]()` 用于优雅停止同步任务、心跳、维护线程和会话注册表。生产服务管理器必须在停止 worker 前调用该关闭入口；如果所用 WSGI 服务器没有应用级退出回调，请使用外层包装器或服务管理器的停止脚本调用它，再结束进程。
+
+不要为补偿心跳而启动第二个应用 worker。单 worker 是内存登录上下文和任务状态的一项硬约束。进程异常退出或被强制终止时，内存中的登录上下文和同步任务会丢失；重启后应检查最新同步记录和心跳状态，必要时重新登录，并确认没有活动同步任务后再手动发起新的同步。
 
 ## 数据库历史保留与监控
 
@@ -74,7 +76,7 @@ GitHub Actions 会在 `main`/`master` 的推送、Pull Request 和手动触发�
 - `GridRealtimeMonitor-windows-executable`：仅包含 `GridRealtimeMonitor.exe`；
 - `GridRealtimeMonitor-windows-package`：包含 exe、`config.yaml`、本部署说明和 SHA-256 校验文件的 ZIP 包。
 
-创建并推送 `v*` 格式的版本 tag（例如 `v0.1.0`）后，工作流会构建并将 ZIP 包及其 `.sha256` 校验文件上传到对应的 GitHub Release；如果 Release 尚不存在，工作流会自动创建并生成发布说明。下载 ZIP 后解压到独立目录，确保 `GridRealtimeMonitor.exe` 与 `config.yaml` 位于同一目录，再启动程序。不要把数据库、日志、Cookies 或其他运行数据放进发布包。
+创建并推送 `v*` 格式的版本 tag（例如 `v0.1.0`）后，工作流会构建并将 ZIP 包及其 `.sha256` 校验文件上传到对应的 GitHub Release；如果 Release 尚不存在，工作流会自动创建并生成发布说明。下载 ZIP 后解压到独立目录，确保 `GridRealtimeMonitor.exe` 与 `config.yaml` 位于同一目录，再启动程序。设置页保存配置需要该目录和 `config.yaml` 对当前用户可写；不要直接放在 `Program Files`、受控文件夹或其他只读目录中，建议解压到用户有 Modify 权限的目录。若出现配置写入失败，请检查目录和文件权限，并关闭可能锁定 `config.yaml` 的编辑器、云同步软件或安全软件。不要把数据库、日志、Cookies 或其他运行数据放进发布包。
 
 macOS/Linux 可使用源码方式运行；当前 GitHub Actions 仅生成 Windows 可执行文件。
 

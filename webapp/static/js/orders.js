@@ -16,6 +16,7 @@
   let currentJobId = null;
   let polling = false;
   let syncing = false;
+  let syncStateUnknown = false;
   let pollFailures = 0;
   const maxPollFailures = 5;
 
@@ -25,16 +26,29 @@
     timer = null;
     statusTimer = null;
   };
+  const saveJobId = (jobId) => {
+    try {
+      if (jobId) window.sessionStorage.setItem('grid-monitor-sync-job', jobId);
+      else window.sessionStorage.removeItem('grid-monitor-sync-job');
+    } catch (_) {
+      // Storage may be unavailable in privacy-restricted browser contexts.
+    }
+  };
+  const resetSyncState = () => {
+    syncing = false;
+    currentJobId = null;
+    syncStateUnknown = false;
+    polling = false;
+    pollFailures = 0;
+    saveJobId(null);
+  };
   const setCountdown = () => {
     if (!autoSync || syncing) return;
     status.textContent = `下次刷新：${remaining} 秒`;
   };
   const restartCountdown = () => {
+    resetSyncState();
     remaining = interval;
-    syncing = false;
-    currentJobId = null;
-    polling = false;
-    pollFailures = 0;
     clearTimers();
     setCountdown();
     if (!autoSync) return;
@@ -108,10 +122,17 @@
       restartCountdown();
     } catch (error) {
       polling = false;
+      if (error.status === 404) {
+        status.textContent = '同步任务已不存在，将重新安排同步';
+        restartCountdown();
+        return;
+      }
       pollFailures += 1;
       status.textContent = error.message || '同步状态查询失败';
       if (pollFailures >= maxPollFailures) {
-        restartCountdown();
+        syncStateUnknown = true;
+        status.textContent = '同步状态暂时未知，仍会继续查询；确认完成前不会重复提交';
+        statusTimer = window.setTimeout(() => pollJob(jobId), 30000);
       } else {
         statusTimer = window.setTimeout(() => pollJob(jobId), Math.min(10000, 1000 * (2 ** (pollFailures - 1))));
       }
@@ -124,6 +145,8 @@
     try {
       const result = await request('/api/v1/sync', {method: 'POST', retries: 0});
       currentJobId = result.job_id;
+      saveJobId(currentJobId);
+      syncStateUnknown = false;
       pollFailures = 0;
       pollJob(currentJobId);
     } catch (error) {
@@ -142,5 +165,20 @@
     pollJob(currentJobId);
   });
   window.addEventListener('pagehide', clearTimers);
-  if (autoSync) restartCountdown();
+  const restoreJob = () => {
+    try {
+      return window.sessionStorage.getItem('grid-monitor-sync-job');
+    } catch (_) {
+      return null;
+    }
+  };
+  const restoredJobId = restoreJob();
+  if (autoSync && restoredJobId) {
+    currentJobId = restoredJobId;
+    syncing = true;
+    status.textContent = '正在恢复同步状态…';
+    pollJob(currentJobId);
+  } else if (autoSync) {
+    restartCountdown();
+  }
 })();

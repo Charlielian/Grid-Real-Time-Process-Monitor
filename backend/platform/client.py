@@ -35,9 +35,13 @@ class PlatformClient:
         content_type = response.headers.get("content-type", "").lower()
         if response.status_code in (401, 403) or "/cas/login" in response.url:
             raise SessionExpired("业务会话已失效")
+        if response.status_code >= 400:
+            raise PlatformError(f"业务接口返回 HTTP {response.status_code}")
         if "text/html" in content_type and "json" not in content_type:
-            raise SessionExpired("业务接口返回登录页")
-        response.raise_for_status()
+            body = str(getattr(response, "text", "")).lower()
+            if any(marker in body for marker in ("/cas/login", "j_username", "j_password", 'id="fm1"')):
+                raise SessionExpired("业务接口返回登录页")
+            raise PlatformError("业务接口返回非 JSON 页面")
         try:
             return response.json()
         except ValueError as exc:

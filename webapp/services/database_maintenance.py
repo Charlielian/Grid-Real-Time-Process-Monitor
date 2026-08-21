@@ -88,7 +88,7 @@ class DatabaseMaintenanceService:
             )
             self._thread.start()
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float | None = None) -> None:
         with self._lock:
             if self._closed:
                 return
@@ -96,4 +96,4 @@ class DatabaseMaintenanceService:
             self._stop.set()
             thread = self._thread
         if thread and thread is not threading.current_thread():
-            thread.join(timeout=max(5, self.config.database_cleanup_interval_seconds + 1))
+            thread.join(timeout=timeout)

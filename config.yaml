@@ -1,21 +1,38 @@
+# 上游平台 HTTPS 地址；必须使用 https://，用于登录和同步工单。
 base_url: https://nqi.gmcc.net:20443
+# Web 服务监听地址。127.0.0.1 仅允许本机访问；如需局域网访问请改为实际网卡地址。
 web_host: 127.0.0.1
+# Web 服务监听端口，范围 1-65535；常用端口为 5000。
 web_port: 5000
+# 自动同步轮询间隔（秒），范围 5-3600。
 poll_interval_seconds: 60
+# 上游登录会话心跳间隔（秒），范围 30-86400。
 heartbeat_interval_seconds: 300
+# 每次同步查询最近多少小时内更新的工单，范围 1-720。
 lookback_hours: 24
+# 工单列表默认每页条数，范围 10-500。
 page_size: 50
+# 是否在监控页面按轮询间隔自动发起同步。
 auto_sync: false
+# 可选 CA 证书文件路径；不需要自定义 CA 时保持 null。
 ca_bundle: null
+# 上游页面中用于识别目标流程的标题。
 target_process_title: 微网格实时优化流程
+# 上游流程的固定标识。
 target_process_key: proc_wwg_ssyhlc
-target_title_keywords:
-- 阳江
+# 是否自动领取待领取任务；false 表示只展示并由用户手动领取。
 auto_claim_pending_tasks: false
+# 工单快照保留天数；0 表示永久保留。
 work_order_retention_days: 90
+# 工单事件保留天数；0 表示永久保留。
 work_order_event_retention_days: 180
+# 已完成同步记录保留天数；0 表示永久保留，未完成记录不会清理。
 sync_run_retention_days: 90
+# 数据库维护线程的执行间隔（秒），范围 60-86400。
 database_cleanup_interval_seconds: 3600
+# 每轮数据库清理最多删除的记录数，范围 1-10000。
 database_cleanup_batch_size: 500
+# SQLite 主数据库文件大小告警阈值（MB）；0 表示不告警。
 database_max_size_mb: 1024
+# SQLite WAL 文件大小告警阈值（MB）；0 表示不告警。
 wal_max_size_mb: 256

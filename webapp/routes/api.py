@@ -7,7 +7,8 @@ from flask import Blueprint, current_app, jsonify, request, session
 
 from backend.auth.cas_client import SessionExpired
 from backend.platform.client import PlatformBusinessError, PlatformError
-from shared.config import config_to_dict, matches_title_keywords, with_config_updates
+from shared.config import config_to_dict, with_config_updates
+from shared.filters import parse_order_filters
 from webapp.routes.decorators import api_login_required, check_csrf
 
 bp = Blueprint("api", __name__, url_prefix="/api/v1")
@@ -67,8 +68,8 @@ def _task_ids_payload() -> list[str] | None:
     return [task_id.strip() for task_id in task_ids]
 
 
-def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config: Any) -> list[Any]:
-    """Read every upstream page before applying the configured title scope."""
+def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config: Any, cities: tuple[str, ...] = ()) -> list[Any]:
+    """Read every upstream page before applying the requested city scope."""
     page_index = 1
     page_size = 100
     tasks: list[Any] = []
@@ -83,9 +84,9 @@ def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config:
         )
         tasks.extend(
             task for task in result.items
-            if matches_title_keywords(task.title, config.target_title_keywords)
+            if not cities or any(city in task.title for city in cities)
         )
-        if not result.items or page_index * result.page_size >= result.total:
+        if not result.items or len(result.items) < max(1, result.page_size):
             break
         page_index += 1
     return tasks
@@ -111,7 +112,12 @@ def pending_tasks():
     try:
         client = current_app.extensions["web_auth"].platform(request.web_auth_context)
         config = current_app.extensions["app_config"]
-        items = _query_all_todo_tasks(client, request.web_user.login_id, assigned=False, config=config)
+        try:
+            filters = parse_order_filters(request.args)
+        except ValueError as exc:
+            return _error("invalid_filter", str(exc), 400)
+        cities = filters["city"]
+        items = _query_all_todo_tasks(client, request.web_user.login_id, assigned=False, config=config, cities=cities)
         start = (page - 1) * page_size
         return jsonify({
             "items": [_task_row(task) for task in items[start:start + page_size]],
@@ -156,7 +162,7 @@ def claim_pending_tasks():
         records = []
         updated = []
         for task_id in task_ids:
-            row = db.get_work_order_by_task_id(task_id, title_keywords=config.target_title_keywords)
+            row = db.get_work_order_by_task_id(task_id)
             if row is not None and row["assignee"] != login_id:
                 records.append(WorkOrder(
                     order_id=row["order_id"], number=row["number"], title=row["title"], status=row["status"],
@@ -185,7 +191,7 @@ def dashboard():
     db = current_app.extensions["database"]
     latest = db.latest_sync_run()
     return jsonify({
-        "stats": db.dashboard_stats(title_keywords=config.target_title_keywords),
+        "stats": db.dashboard_stats(),
         "latest_sync": dict(latest) if latest else None,
     })
 
@@ -193,17 +199,18 @@ def dashboard():
 @bp.get("/orders")
 @api_login_required
 def orders():
-    config = current_app.extensions["app_config"]
     db = current_app.extensions["database"]
     page = max(1, request.args.get("page", 1, type=int))
     page_size = min(500, max(10, request.args.get("page_size", 50, type=int)))
-    filters = {
-        "keyword": request.args.get("keyword", "", type=str).strip(),
-        "status": request.args.get("status", "", type=str).strip(),
-        "node": request.args.get("node", "", type=str).strip(),
-    }
-    rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=config.target_title_keywords, **filters)
-    total = db.count_work_orders(title_keywords=config.target_title_keywords, **filters)
+    try:
+        filters = parse_order_filters(request.args)
+    except ValueError as exc:
+        return _error("invalid_filter", str(exc), 400)
+    city_keywords = filters.pop("city")
+    filters.pop("start_date")
+    filters.pop("end_date")
+    rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=city_keywords, **filters)
+    total = db.count_work_orders(title_keywords=city_keywords, **filters)
     return jsonify({
         "items": [_row(row) for row in rows],
         "total": total,
@@ -215,9 +222,8 @@ def orders():
 @bp.get("/orders/<order_id>")
 @api_login_required
 def order_detail(order_id: str):
-    config = current_app.extensions["app_config"]
     db = current_app.extensions["database"]
-    row = db.get_work_order(order_id, title_keywords=config.target_title_keywords)
+    row = db.get_work_order(order_id)
     if row is None:
         return jsonify({"error": "not_found", "message": "工单不存在"}), 404
     return jsonify({"order": _row(row), "events": [dict(event) for event in db.list_events(order_id)]})
@@ -305,7 +311,11 @@ def update_settings():
     except (TypeError, ValueError):
         _logger().exception("更新设置失败")
         return _error("invalid_settings", "设置参数无效", 400)
-    current_app.extensions["config_store"].save(updated)
+    try:
+        current_app.extensions["config_store"].save(updated)
+    except OSError:
+        _logger().exception("配置文件写入失败")
+        return _error("config_write_failed", "配置文件无法写入，请检查 config.yaml 所在目录权限或文件占用", 500)
     current_app.extensions["app_config"] = updated
     current_app.extensions["web_auth"].update_config(updated)
     current_app.extensions["session_monitor"].update_config(updated)
