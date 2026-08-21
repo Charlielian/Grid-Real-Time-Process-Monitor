@@ -2,16 +2,45 @@
   const button = document.querySelector('#sync-now');
   const status = document.querySelector('#sync-status');
   if (!button) return;
-  const csrf = document.querySelector('meta[name=csrf-token]')?.content || '';
+  const {request} = window.GridApi;
+  let timer = null;
+  let jobId = null;
+  let stopped = false;
+
+  const stop = () => {
+    if (timer) window.clearTimeout(timer);
+    timer = null;
+  };
+  const poll = async () => {
+    if (stopped || !jobId) return;
+    try {
+      const current = await request(`/api/v1/sync/${encodeURIComponent(jobId)}`);
+      status.textContent = `${current.message || '同步中…'} (${current.progress ?? 0}%)`;
+      if (['queued', 'running'].includes(current.status)) {
+        timer = window.setTimeout(poll, 1000);
+        return;
+      }
+      if (current.status === 'succeeded') window.location.reload();
+      else status.textContent = current.error || '同步未完成';
+      button.disabled = false;
+    } catch (error) {
+      status.textContent = error.message || '同步状态查询失败';
+      timer = window.setTimeout(poll, 2000);
+    }
+  };
   button.addEventListener('click', async () => {
-    button.disabled = true; status.textContent = '正在提交同步任务…';
-    const response = await fetch('/api/v1/sync', { method: 'POST', headers: {'X-CSRF-Token': csrf} });
-    const result = await response.json();
-    if (!response.ok) { status.textContent = result.message || '同步提交失败'; button.disabled = false; return; }
-    const timer = setInterval(async () => {
-      const current = await (await fetch(`/api/v1/sync/${result.job_id}`)).json();
-      status.textContent = `${current.message} (${current.progress}%)`;
-      if (!['queued', 'running'].includes(current.status)) { clearInterval(timer); button.disabled = false; if (current.status === 'succeeded') window.location.reload(); }
-    }, 1000);
+    stopped = false;
+    stop();
+    button.disabled = true;
+    status.textContent = '正在提交同步任务…';
+    try {
+      const result = await request('/api/v1/sync', {method: 'POST', retries: 0});
+      jobId = result.job_id;
+      await poll();
+    } catch (error) {
+      status.textContent = error.message || '同步提交失败';
+      button.disabled = false;
+    }
   });
+  window.addEventListener('pagehide', () => { stopped = true; stop(); });
 })();

@@ -37,13 +37,22 @@ class SessionMonitor:
 
     def update_config(self, config: AppConfig) -> None:
         with self._lock:
-            self.config = config
-            self.interval_seconds = config.heartbeat_interval_seconds
-            self.cookies = PersistentCookieStore(config, self.logger)
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
-        for session in sessions:
-            session.close()
+            login_ids = sorted(self._sessions)
+        locks = [self._lock_for(login_id) for login_id in login_ids]
+        for lock in locks:
+            lock.acquire()
+        try:
+            with self._lock:
+                self.config = config
+                self.interval_seconds = config.heartbeat_interval_seconds
+                self.cookies = PersistentCookieStore(config, self.logger)
+                sessions = list(self._sessions.values())
+                self._sessions.clear()
+            for session in sessions:
+                session.close()
+        finally:
+            for lock in reversed(locks):
+                lock.release()
 
     def _lock_for(self, login_id: str) -> threading.Lock:
         with self._lock:
@@ -112,10 +121,20 @@ class SessionMonitor:
                 continue
             self.check_now(str(account["login_id"]))
 
+    def _close_sessions(self) -> None:
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            session.close()
+
     def _run(self) -> None:
-        self._run_cycle()
-        while not self._stop.wait(self.interval_seconds):
+        try:
             self._run_cycle()
+            while not self._stop.wait(self.interval_seconds):
+                self._run_cycle()
+        finally:
+            self._close_sessions()
 
     def start(self) -> None:
         with self._lock:
@@ -130,9 +149,8 @@ class SessionMonitor:
         thread = self._thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=timeout)
+        if thread and thread.is_alive():
+            return
+        self._close_sessions()
         with self._lock:
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
             self._thread = None
-        for session in sessions:
-            session.close()

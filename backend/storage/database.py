@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -11,6 +12,15 @@ from shared.models import WorkOrder
 
 
 _COMPLETED_STATUSES = ("已办结", "completed", "done")
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseMaintenanceStats:
+    work_orders_deleted: int = 0
+    events_deleted: int = 0
+    sync_runs_deleted: int = 0
+    database_size_bytes: int = 0
+    wal_size_bytes: int = 0
 
 
 class Database:
@@ -79,6 +89,7 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_work_order_events_order ON work_order_events(order_id, id);
+                CREATE INDEX IF NOT EXISTS idx_work_order_events_created_at ON work_order_events(created_at);
                 CREATE TABLE IF NOT EXISTS sync_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     started_at TEXT NOT NULL,
@@ -88,6 +99,7 @@ class Database:
                     changed INTEGER NOT NULL DEFAULT 0,
                     error TEXT
                 );
+                CREATE INDEX IF NOT EXISTS idx_sync_runs_finished_at ON sync_runs(finished_at);
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -105,6 +117,61 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_saved_accounts_last_used ON saved_accounts(last_used_at DESC);
                 """
             )
+
+    def file_sizes(self) -> tuple[int, int]:
+        database_size = self.path.stat().st_size if self.path.exists() else 0
+        wal_path = Path(f"{self.path}-wal")
+        wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+        return database_size, wal_size
+
+    def checkpoint_wal(self) -> None:
+        with self._read() as connection:
+            connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+    def cleanup_retention(
+        self,
+        *,
+        work_order_cutoff: str | None = None,
+        event_cutoff: str | None = None,
+        sync_run_cutoff: str | None = None,
+        batch_size: int = 500,
+    ) -> DatabaseMaintenanceStats:
+        batch_size = max(1, min(int(batch_size), 10000))
+        work_orders_deleted = events_deleted = sync_runs_deleted = 0
+        with self._transaction() as connection:
+            if work_order_cutoff:
+                ids = [row["order_id"] for row in connection.execute(
+                    "SELECT order_id FROM work_orders WHERE updated_at < ? ORDER BY updated_at LIMIT ?",
+                    (work_order_cutoff, batch_size),
+                )]
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    events_deleted += connection.execute(
+                        f"DELETE FROM work_order_events WHERE order_id IN ({placeholders})", ids
+                    ).rowcount
+                    work_orders_deleted += connection.execute(
+                        f"DELETE FROM work_orders WHERE order_id IN ({placeholders})", ids
+                    ).rowcount
+            if event_cutoff:
+                events_deleted += connection.execute(
+                    "DELETE FROM work_order_events WHERE created_at < ? AND id IN "
+                    "(SELECT id FROM work_order_events WHERE created_at < ? ORDER BY created_at, id LIMIT ?)",
+                    (event_cutoff, event_cutoff, batch_size),
+                ).rowcount
+            if sync_run_cutoff:
+                sync_runs_deleted += connection.execute(
+                    "DELETE FROM sync_runs WHERE finished_at IS NOT NULL AND finished_at < ? AND id IN "
+                    "(SELECT id FROM sync_runs WHERE finished_at IS NOT NULL AND finished_at < ? ORDER BY finished_at, id LIMIT ?)",
+                    (sync_run_cutoff, sync_run_cutoff, batch_size),
+                ).rowcount
+        database_size, wal_size = self.file_sizes()
+        return DatabaseMaintenanceStats(
+            work_orders_deleted=work_orders_deleted,
+            events_deleted=events_deleted,
+            sync_runs_deleted=sync_runs_deleted,
+            database_size_bytes=database_size,
+            wal_size_bytes=wal_size,
+        )
 
     def upsert_work_order(self, order: WorkOrder, connection: sqlite3.Connection | None = None) -> tuple[bool, list[tuple[str, str, str | None]]]:
         owns_connection = connection is None

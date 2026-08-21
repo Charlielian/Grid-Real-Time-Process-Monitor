@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
+from shared.config import with_config_updates
 from webapp.routes.decorators import check_csrf, web_login_required
 
 bp = Blueprint("web", __name__)
@@ -106,29 +107,21 @@ def settings() -> str:
         check_csrf()
         try:
             current = current_app.extensions["app_config"]
-            from shared.config import AppConfig
-            updated = AppConfig(
-                base_url=current.base_url,
-                web_host=current.web_host,
-                web_port=current.web_port,
+            updated = with_config_updates(
+                current,
                 poll_interval_seconds=int(request.form.get("poll_interval_seconds", current.poll_interval_seconds)),
-                heartbeat_interval_seconds=current.heartbeat_interval_seconds,
                 lookback_hours=int(request.form.get("lookback_hours", current.lookback_hours)),
                 page_size=int(request.form.get("page_size", current.page_size)),
                 auto_sync=request.form.get("auto_sync") == "on",
-                ca_bundle=current.ca_bundle,
-                target_process_title=current.target_process_title,
-                target_process_key=current.target_process_key,
-                target_title_keywords=current.target_title_keywords,
-                auto_claim_pending_tasks=current.auto_claim_pending_tasks,
             )
             current_app.extensions["config_store"].save(updated)
             current_app.extensions["app_config"] = updated
             current_app.extensions["web_auth"].update_config(updated)
             current_app.extensions["session_monitor"].update_config(updated)
             flash("设置已保存", "success")
-        except (TypeError, ValueError) as exc:
-            flash(str(exc), "error")
+        except (TypeError, ValueError):
+            current_app.extensions["logger"].exception("更新页面设置失败")
+            flash("设置参数无效，请检查输入", "error")
         return redirect(url_for("web.settings"))
     return render_template("settings.html", config=current_app.extensions["app_config"])
 

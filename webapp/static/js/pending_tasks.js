@@ -4,38 +4,44 @@
   const message = document.querySelector('#pending-message');
   const refresh = document.querySelector('#pending-refresh');
   if (!page || !rows || !message || !refresh) return;
-  const csrf = document.querySelector('meta[name=csrf-token]')?.content || '';
   const autoClaim = page.dataset.autoClaim === 'true';
   const pollInterval = Math.max(5, Number(page.dataset.pollInterval || 60)) * 1000;
+  const {request} = window.GridApi;
   let timer = null;
   let inFlight = false;
+  let autoClaimFailures = 0;
+  const maxAutoClaimFailures = 3;
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-  const claimIds = async (taskIds) => {
-    const response = await fetch('/api/v1/pending-tasks/claim', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
-      body: JSON.stringify({task_ids: taskIds}),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.message || '领取失败');
-    return result;
-  };
+  const claimIds = (taskIds) => request('/api/v1/pending-tasks/claim', {
+    method: 'POST',
+    body: {task_ids: taskIds},
+    retries: 0,
+  });
   const load = async ({automatic = false} = {}) => {
     if (inFlight || document.hidden) return;
     inFlight = true;
     refresh.disabled = true;
     if (!automatic) message.textContent = '正在加载…';
     try {
-      const response = await fetch(`/api/v1/pending-tasks?page_size=${encodeURIComponent(page.dataset.pageSize || '50')}`, {cache: 'no-store'});
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.message || '待领取任务加载失败');
+      const result = await request(`/api/v1/pending-tasks?page_size=${encodeURIComponent(page.dataset.pageSize || '50')}`);
       if (autoClaim && result.items?.length) {
         message.textContent = `自动领取 ${result.items.length} 条任务…`;
-        await claimIds(result.items.map((task) => task.task_id));
-        message.textContent = '自动领取成功，正在刷新…';
-        inFlight = false;
-        return await load({automatic: true});
+        try {
+          await claimIds(result.items.map((task) => task.task_id));
+          autoClaimFailures = 0;
+          message.textContent = '自动领取成功，正在刷新…';
+          inFlight = false;
+          return await load({automatic: true});
+        } catch (error) {
+          autoClaimFailures += 1;
+          message.textContent = autoClaimFailures >= maxAutoClaimFailures
+            ? `${error.message || '自动领取失败'}，已暂停自动领取，请手动刷新`
+            : (error.message || '自动领取失败，将稍后重试');
+          if (autoClaimFailures >= maxAutoClaimFailures) clearTimeout(timer);
+          return;
+        }
       }
+      autoClaimFailures = 0;
       rows.replaceChildren();
       if (!result.items?.length) {
         rows.innerHTML = '<tr><td colspan="6" class="muted">暂无待领取任务</td></tr>';
@@ -71,26 +77,16 @@
     }
   };
   const schedule = () => {
-    if (!autoClaim || document.hidden) return;
+    if (!autoClaim || document.hidden || autoClaimFailures >= maxAutoClaimFailures) return;
     clearTimeout(timer);
-    timer = setTimeout(async () => {
-      await load({automatic: true});
-      schedule();
-    }, pollInterval);
+    const delay = autoClaimFailures ? Math.min(60000, pollInterval * (2 ** autoClaimFailures)) : pollInterval;
+    timer = setTimeout(async () => { await load({automatic: true}); schedule(); }, delay);
   };
-  refresh.addEventListener('click', () => load());
-  rows.addEventListener('click', (event) => {
-    const button = event.target.closest('.pending-claim');
-    if (button) claim(button);
-  });
+  refresh.addEventListener('click', () => { autoClaimFailures = 0; load(); schedule(); });
+  rows.addEventListener('click', (event) => { const button = event.target.closest('.pending-claim'); if (button) claim(button); });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      clearTimeout(timer);
-      timer = null;
-    } else {
-      load({automatic: autoClaim});
-      schedule();
-    }
+    if (document.hidden) { clearTimeout(timer); timer = null; }
+    else { autoClaimFailures = 0; load({automatic: autoClaim}); schedule(); }
   });
   window.addEventListener('beforeunload', () => clearTimeout(timer));
   load().finally(schedule);

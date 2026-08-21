@@ -13,98 +13,20 @@ import keyring
 import requests
 
 from backend.auth.cas_client import CasClient, SessionFactory, SessionExpired
+from backend.auth.cookie_store import CookieStore
 from backend.platform.client import PlatformClient
 from shared.config import AppConfig
 from shared.models import UserInfo
 
 
-class PersistentCookieStore:
+class PersistentCookieStore(CookieStore):
     """Store upstream session cookies in the current user's OS keyring."""
 
     service_prefix = "grid-realtime-monitor-web"
 
     def __init__(self, config: AppConfig, logger: Any) -> None:
-        self.logger = logger
         origin_key = hashlib.sha256(config.origin.encode("utf-8")).hexdigest()[:20]
-        self.service_name = f"{self.service_prefix}-{origin_key}"
-
-    def _read(self, login_id: str) -> list[dict[str, Any]] | None:
-        try:
-            raw = keyring.get_password(self.service_name, login_id)
-        except Exception as exc:
-            self.logger.warning("读取保存的登录会话失败: %s", type(exc).__name__)
-            return None
-        if not raw:
-            return None
-        try:
-            value = json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-        return value if isinstance(value, list) else None
-
-    def has(self, login_id: str) -> bool:
-        return bool(login_id and self._read(login_id))
-
-    def save(self, login_id: str, session: requests.Session) -> bool:
-        if not login_id:
-            return False
-        cookies: list[dict[str, Any]] = []
-        for cookie in session.cookies:
-            cookies.append({
-                "name": cookie.name,
-                "value": cookie.value,
-                "domain": cookie.domain,
-                "path": cookie.path,
-                "expires": cookie.expires,
-                "secure": cookie.secure,
-                "rest": dict(cookie._rest),
-            })
-        if not cookies:
-            return False
-        try:
-            keyring.set_password(
-                self.service_name,
-                login_id,
-                json.dumps(cookies, ensure_ascii=False, separators=(",", ":")),
-            )
-            return True
-        except Exception as exc:
-            self.logger.warning("保存登录会话失败: %s", type(exc).__name__)
-            return False
-
-    def load(self, login_id: str, session: requests.Session) -> bool:
-        cookies = self._read(login_id)
-        if not cookies:
-            return False
-        try:
-            for item in cookies:
-                if not isinstance(item, dict):
-                    return False
-                name = item.get("name")
-                value = item.get("value")
-                domain = item.get("domain")
-                if not all(isinstance(part, str) and part for part in (name, value, domain)):
-                    return False
-                session.cookies.set(
-                    name,
-                    value,
-                    domain=domain,
-                    path=item.get("path") or "/",
-                    expires=item.get("expires"),
-                    secure=bool(item.get("secure", False)),
-                    rest=item.get("rest") if isinstance(item.get("rest"), dict) else None,
-                )
-            return True
-        except (TypeError, ValueError, requests.exceptions.RequestException):
-            return False
-
-    def clear(self, login_id: str) -> None:
-        if not login_id:
-            return
-        try:
-            keyring.delete_password(self.service_name, login_id)
-        except Exception:
-            pass
+        super().__init__(f"{self.service_prefix}-{origin_key}", logger)
 
 
 @dataclass
@@ -130,52 +52,112 @@ class WebAuthContext:
 class SessionRegistry:
     """In-memory service-side session registry for a single Flask process."""
 
-    def __init__(self, config: AppConfig, logger: Any, ttl_seconds: int = 1800) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        logger: Any,
+        ttl_seconds: int = 1800,
+        *,
+        cleanup_interval_seconds: float | None = None,
+    ) -> None:
         self.config = config
         self.logger = logger
         self.ttl_seconds = ttl_seconds
         self._contexts: dict[str, WebAuthContext] = {}
         self._lock = threading.RLock()
+        self._remove_callback: Any | None = None
+        self._closed = False
+        self._cleanup_stop = threading.Event()
+        interval = cleanup_interval_seconds or min(max(ttl_seconds / 2, 1), 60)
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop,
+            args=(max(0.1, interval),),
+            name="auth-session-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
+
+    def set_remove_callback(self, callback: Any | None) -> None:
+        self._remove_callback = callback
+
+    def _cleanup_loop(self, interval: float) -> None:
+        while not self._cleanup_stop.wait(interval):
+            self.cleanup()
+
+    def _dispose(self, context: WebAuthContext) -> None:
+        callback = self._remove_callback
+        if callback is not None:
+            callback(context.context_id)
+        context.user = None
+        context.captcha_page = None
+        context.captcha_verified = False
+        context.username = ""
+        context.session.cookies.clear()
+        context.session.close()
 
     def create(self) -> WebAuthContext:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("会话注册表已关闭")
         context_id = secrets.token_urlsafe(32)
         context = WebAuthContext(
             context_id=context_id,
             session=SessionFactory(self.config, self.logger).create(),
         )
         with self._lock:
+            if self._closed:
+                context.session.close()
+                raise RuntimeError("会话注册表已关闭")
             self._contexts[context_id] = context
         return context
 
     def get(self, context_id: str | None) -> WebAuthContext | None:
         if not context_id:
             return None
+        expired: WebAuthContext | None = None
         with self._lock:
             context = self._contexts.get(context_id)
             if context is None:
                 return None
             if context.expired(self.ttl_seconds):
-                self._contexts.pop(context_id, None)
-                context.session.cookies.clear()
-                return None
-            context.touch()
-            return context
+                expired = self._contexts.pop(context_id, None)
+            else:
+                context.touch()
+                return context
+        if expired:
+            self._dispose(expired)
+        return None
 
     def remove(self, context_id: str | None) -> None:
         if not context_id:
             return
         with self._lock:
             context = self._contexts.pop(context_id, None)
-            if context:
-                context.session.cookies.clear()
-                context.user = None
+        if context:
+            self._dispose(context)
 
     def cleanup(self) -> None:
         with self._lock:
-            expired = [key for key, value in self._contexts.items() if value.expired(self.ttl_seconds)]
-            for key in expired:
-                context = self._contexts.pop(key)
-                context.session.cookies.clear()
+            expired = [
+                self._contexts.pop(key)
+                for key, value in list(self._contexts.items())
+                if value.expired(self.ttl_seconds)
+            ]
+        for context in expired:
+            self._dispose(context)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            contexts = list(self._contexts.values())
+            self._contexts.clear()
+        self._cleanup_stop.set()
+        if self._cleanup_thread is not threading.current_thread():
+            self._cleanup_thread.join(timeout=5)
+        for context in contexts:
+            self._dispose(context)
 
 
 class WebAuthService:
@@ -203,9 +185,12 @@ class WebAuthService:
             user = CasClient(self.registry.config, context.session, self.logger).check_session(
                 expected_login_id=login_id
             )
-        except Exception:
+        except SessionExpired:
             self.cookies.clear(login_id)
             self.registry.remove(context.context_id)
+            raise
+        except requests.RequestException:
+            self.logger.warning("恢复登录会话时上游网络暂不可用")
             raise
         context.user = user
         context.touch()
@@ -268,8 +253,9 @@ class WebAuthService:
         context.captcha_page = None
         context.captcha_verified = False
         context.touch()
-        self.cookies.save(user.login_id, context.session)
-        if self.database is not None:
+        if not self.cookies.save(user.login_id, context.session):
+            self.logger.warning("登录成功但保存会话失败: %s", user.login_id)
+        elif self.database is not None:
             self.database.upsert_saved_account(user.login_id, user.display_name)
         return user
 
@@ -281,8 +267,11 @@ class WebAuthService:
             user = CasClient(self.registry.config, context.session, self.logger).check_session(
                 expected_login_id=context.user.login_id
             )
-        except Exception:
+        except SessionExpired:
             self.registry.remove(context.context_id)
+            raise
+        except requests.RequestException:
+            self.logger.warning("检查登录会话时上游网络暂不可用")
             raise
         context.user = user
         context.touch()

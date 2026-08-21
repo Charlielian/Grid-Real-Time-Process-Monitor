@@ -10,6 +10,7 @@ from flask import Flask, current_app, session
 from backend.storage.database import Database
 from shared.config import AppConfig, AppPaths, ConfigStore, configure_logging
 from webapp.services.auth import SessionRegistry, WebAuthService
+from webapp.services.database_maintenance import DatabaseMaintenanceService
 from webapp.services.session_monitor import SessionMonitor
 from webapp.services.sync import SyncJobManager
 
@@ -36,9 +37,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     paths = AppPaths((test_config or {}).get("DATA_DIR") if test_config else None)
     logger = configure_logging(paths)
     config_store = ConfigStore(paths, logger)
-    config = config_store.load()
-    if test_config and test_config.get("APP_CONFIG"):
-        config = test_config["APP_CONFIG"]
+    config = test_config["APP_CONFIG"] if test_config and test_config.get("APP_CONFIG") else config_store.load()
 
     app.config.from_mapping(
         SECRET_KEY=_secret_key(paths, test_config),
@@ -56,7 +55,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     registry = SessionRegistry(config, logger, ttl_seconds=int(app.config.get("AUTH_CONTEXT_TTL", 1800)))
     auth = WebAuthService(registry, logger, database)
     jobs = SyncJobManager(database, logger)
+    registry.set_remove_callback(lambda context_id: jobs.cancel_context(context_id, wait=True))
     monitor = SessionMonitor(database, config, logger)
+    maintenance = DatabaseMaintenanceService(database, config, logger, autostart=not bool(app.config.get("TESTING")))
     app.extensions.update({
         "paths": paths,
         "logger": logger,
@@ -67,7 +68,24 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         "web_auth": auth,
         "sync_jobs": jobs,
         "session_monitor": monitor,
+        "database_maintenance": maintenance,
     })
+
+    shutdown_lock = __import__("threading").Lock()
+    shutdown_state = {"closed": False}
+
+    def shutdown_resources() -> None:
+        with shutdown_lock:
+            if shutdown_state["closed"]:
+                return
+            shutdown_state["closed"] = True
+        jobs.shutdown()
+        monitor.shutdown()
+        maintenance.shutdown()
+        registry.shutdown()
+        database.close()
+
+    app.extensions["shutdown"] = shutdown_resources
 
     @app.context_processor
     def inject_globals() -> dict[str, Any]:
@@ -92,7 +110,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.errorhandler(400)
     def bad_request(error: Any) -> Any:
         if __import__("flask").request.path.startswith("/api/"):
-            return __import__("flask").jsonify({"error": "bad_request", "message": str(error)}), 400
-        return str(error), 400
+            return __import__("flask").jsonify({"error": "bad_request", "message": "请求无效，请检查 CSRF 校验和请求格式"}), 400
+        return "请求无效，请检查 CSRF 校验和请求格式", 400
 
     return app

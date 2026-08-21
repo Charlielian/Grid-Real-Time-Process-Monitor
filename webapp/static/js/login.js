@@ -4,17 +4,12 @@
   const message = document.querySelector('#message');
   const csrf = () => form.querySelector('[name=csrf_token]').value;
   const setMessage = (text, error = false) => { message.textContent = text; message.className = error ? 'flash error' : 'muted'; };
-  const postJson = async (url, body = undefined) => {
-    const options = {method: 'POST', headers: {'X-CSRF-Token': csrf()}};
-    if (body !== undefined) {
-      options.headers['Content-Type'] = 'application/json';
-      options.body = JSON.stringify(body);
-    }
-    const response = await fetch(url, options);
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.message || '请求失败');
-    return result;
-  };
+  const postJson = async (url, body = undefined) => GridApi.request(url, {
+    method: 'POST',
+    body,
+    headers: {'X-CSRF-Token': csrf()},
+    retries: 0,
+  });
   document.querySelectorAll('.restore-account').forEach((button) => {
     button.addEventListener('click', async () => {
       button.disabled = true;
@@ -47,17 +42,30 @@
   document.querySelector('#refresh-captcha').addEventListener('click', refresh);
   document.querySelector('#verify-captcha').addEventListener('click', async () => {
     const body = Object.fromEntries(new FormData(form));
-    const result = await postJson('/auth/captcha/verify', body);
-    setMessage(result.message, !result.ok);
-    document.querySelector('#send-sms').disabled = !result.ok;
+    const button = document.querySelector('#verify-captcha');
+    button.disabled = true;
+    try {
+      const result = await postJson('/auth/captcha/verify', body);
+      setMessage(result.message, !result.ok);
+      document.querySelector('#send-sms').disabled = !result.ok;
+    } catch (error) {
+      setMessage(error.message || '验证码校验失败', true);
+    } finally {
+      button.disabled = false;
+    }
   });
   document.querySelector('#send-sms').addEventListener('click', async (event) => {
     const body = Object.fromEntries(new FormData(form));
     const button = event.currentTarget; button.disabled = true;
-    const result = await postJson('/auth/sms', body); setMessage(result.message, !result.ok);
-    if (!result.ok) { button.disabled = false; return; }
-    let left = 60; button.textContent = `${left}s 后重发`;
-    const timer = setInterval(() => { left -= 1; button.textContent = `${left}s 后重发`; if (left <= 0) { clearInterval(timer); button.textContent = '发送短信验证码'; button.disabled = false; } }, 1000);
+    try {
+      const result = await postJson('/auth/sms', body); setMessage(result.message, !result.ok);
+      if (!result.ok) { button.disabled = false; return; }
+      let left = 60; button.textContent = `${left}s 后重发`;
+      const timer = setInterval(() => { left -= 1; button.textContent = `${left}s 后重发`; if (left <= 0) { clearInterval(timer); button.textContent = '发送短信验证码'; button.disabled = false; } }, 1000);
+    } catch (error) {
+      setMessage(error.message || '短信发送失败', true);
+      button.disabled = false;
+    }
   });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();

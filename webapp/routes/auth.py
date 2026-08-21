@@ -32,6 +32,7 @@ def captcha():
     try:
         image = current_app.extensions["web_auth"].captcha(context)
     except Exception:
+        current_app.extensions["logger"].exception("获取验证码失败")
         return jsonify({"error": "upstream_unavailable", "message": "验证码获取失败"}), 502
     response = current_app.response_class(image, mimetype="image/jpeg")
     response.headers["Cache-Control"] = "no-store"
@@ -109,6 +110,7 @@ def restore_saved_session():
     try:
         user = auth.restore(context, login_id)
     except Exception:
+        current_app.extensions["logger"].exception("恢复保存会话失败")
         session.pop("auth_context_id", None)
         return jsonify({"ok": False, "message": "保存的 Cookies 已失效，请重新登录"}), 401
     session.permanent = True

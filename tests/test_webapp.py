@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import pytest
 
 from shared.config import AppConfig
+from shared.models import UserInfo
 from webapp import create_app
+from webapp.routes.api import _parse_bool
 
 
 @pytest.fixture()
@@ -19,6 +22,7 @@ def app():
             "APP_CONFIG": AppConfig(),
         })
         yield application
+        application.extensions["shutdown"]()
         for handler in application.extensions["logger"].handlers:
             handler.flush()
             if hasattr(handler, "baseFilename"):
@@ -26,6 +30,66 @@ def app():
         application.extensions["logger"].handlers.clear()
 
 
+def test_parse_bool_accepts_supported_values() -> None:
+    assert _parse_bool(True, "auto_sync") is True
+    assert _parse_bool(False, "auto_sync") is False
+    assert _parse_bool(" TRUE ", "auto_sync") is True
+    assert _parse_bool("false", "auto_sync") is False
+    assert _parse_bool(1, "auto_sync") is True
+    assert _parse_bool(0, "auto_sync") is False
+
+
+@pytest.mark.parametrize("value", [None, "yes", "", 2, [], {}])
+def test_parse_bool_rejects_unsupported_values(value) -> None:
+    with pytest.raises(ValueError, match="auto_sync"):
+        _parse_bool(value, "auto_sync")
+
+
+def test_settings_api_parses_boolean_string(app, monkeypatch) -> None:
+    context = SimpleNamespace(context_id="context-1")
+    user = UserInfo(login_id="user-1", display_name="测试用户")
+    monkeypatch.setattr(
+        app.extensions["web_auth"],
+        "require_user",
+        lambda _context_id: (context, user),
+    )
+    client = app.test_client()
+    with client.session_transaction() as browser_session:
+        browser_session["auth_context_id"] = context.context_id
+        browser_session["csrf_token"] = "expected"
+
+    response = client.put(
+        "/api/v1/settings",
+        json={"auto_sync": "false"},
+        headers={"X-CSRF-Token": "expected"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["auto_sync"] is False
+    assert app.extensions["app_config"].auto_sync is False
+
+
+def test_settings_api_rejects_invalid_boolean(app, monkeypatch) -> None:
+    context = SimpleNamespace(context_id="context-1")
+    user = UserInfo(login_id="user-1", display_name="测试用户")
+    monkeypatch.setattr(
+        app.extensions["web_auth"],
+        "require_user",
+        lambda _context_id: (context, user),
+    )
+    client = app.test_client()
+    with client.session_transaction() as browser_session:
+        browser_session["auth_context_id"] = context.context_id
+        browser_session["csrf_token"] = "expected"
+
+    response = client.put(
+        "/api/v1/settings",
+        json={"auto_sync": "not-a-boolean"},
+        headers={"X-CSRF-Token": "expected"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "invalid_settings"
 def test_web_pages_and_unauthorized_api(app) -> None:
     client = app.test_client()
     assert client.get("/").status_code == 302
@@ -75,6 +139,19 @@ def test_title_scope_and_scroll_layout(app) -> None:
     assert "overflow: auto" in css_text
     assert "position: fixed" in css_text
     assert "new-orders-bubble" in css_text
+
+
+def test_frontend_uses_shared_api_and_handles_failures(app) -> None:
+    static = app.root_path + "/static/js/"
+    api = open(static + "api.js", encoding="utf-8").read()
+    assert "AbortController" in api
+    assert "response.status === 401" in api
+    assert "2 ** attempt" in api
+    assert "Accept" in api
+    for name in ("login.js", "dashboard.js", "orders.js", "pending_tasks.js"):
+        assert "fetch(" not in open(static + name, encoding="utf-8").read()
+    base = open(app.root_path + "/templates/base.html", encoding="utf-8").read()
+    assert "js/api.js" in base
 
 
 def test_pending_page_requires_auth_and_has_navigation(app) -> None:

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -21,6 +20,25 @@ TARGET_MODULE = "pro-wfm-biz-client-fak"
 DEFAULT_TARGET_PROCESS_TITLE = "微网格实时优化流程"
 DEFAULT_TARGET_PROCESS_KEY = "proc_wwg_ssyhlc"
 DEFAULT_TARGET_TITLE_KEYWORDS = ("阳江",)
+
+
+def normalize_title_keywords(value: Any) -> tuple[str, ...]:
+    """Normalize configured title fragments without merging in defaults."""
+    if isinstance(value, list):
+        value = tuple(value)
+    if not isinstance(value, tuple):
+        raise ValueError("target_title_keywords 必须是非空字符串列表")
+    normalized: list[str] = []
+    for keyword in value:
+        if not isinstance(keyword, str) or not keyword.strip():
+            raise ValueError("target_title_keywords 必须是非空字符串列表")
+        keyword = keyword.strip()
+        if keyword not in normalized:
+            normalized.append(keyword)
+    if not normalized:
+        raise ValueError("target_title_keywords 必须是非空字符串列表")
+    return tuple(normalized)
+
 
 # Compatibility exports for callers that still import the old names.
 DEFAULT_TARGET_TITLE_KEYWORD = DEFAULT_TARGET_TITLE_KEYWORDS[0]
@@ -48,8 +66,16 @@ class AppConfig:
     target_process_key: str = DEFAULT_TARGET_PROCESS_KEY
     target_title_keywords: tuple[str, ...] = DEFAULT_TARGET_TITLE_KEYWORDS
     auto_claim_pending_tasks: bool = False
+    work_order_retention_days: int = 90
+    work_order_event_retention_days: int = 180
+    sync_run_retention_days: int = 90
+    database_cleanup_interval_seconds: int = 3600
+    database_cleanup_batch_size: int = 500
+    database_max_size_mb: int = 1024
+    wal_max_size_mb: int = 256
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "target_title_keywords", normalize_title_keywords(self.target_title_keywords))
         parsed = urlparse(self.base_url)
         if parsed.scheme != "https" or not parsed.netloc:
             raise ValueError("base_url 必须是 HTTPS 地址")
@@ -77,6 +103,25 @@ class AppConfig:
             raise ValueError("target_title_keywords 必须是非空字符串列表")
         if not isinstance(self.auto_claim_pending_tasks, bool):
             raise ValueError("auto_claim_pending_tasks 必须是布尔值")
+        retention_fields = (
+            self.work_order_retention_days,
+            self.work_order_event_retention_days,
+            self.sync_run_retention_days,
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in retention_fields):
+            raise ValueError("保留周期必须是大于等于 0 的整数")
+        maintenance_integer_fields = (
+            ("database_cleanup_interval_seconds", self.database_cleanup_interval_seconds, 60, 86400),
+            ("database_cleanup_batch_size", self.database_cleanup_batch_size, 1, 10000),
+            ("database_max_size_mb", self.database_max_size_mb, 0, None),
+            ("wal_max_size_mb", self.wal_max_size_mb, 0, None),
+        )
+        for name, value, minimum, maximum in maintenance_integer_fields:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name} 必须是整数")
+            if value < minimum or (maximum is not None and value > maximum):
+                raise ValueError(f"{name} 超出允许范围")
+
         if self.ca_bundle and not Path(self.ca_bundle).is_file():
             raise ValueError("指定的 CA 文件不存在")
 
@@ -86,6 +131,12 @@ class AppConfig:
         return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def with_config_updates(config: AppConfig, **updates: Any) -> AppConfig:
+    values = {field.name: getattr(config, field.name) for field in fields(AppConfig)}
+    values.update(updates)
+    return AppConfig(**values)
+
+
 class AppPaths:
     """应用数据路径，不依赖桌面 UI 框架。"""
 
@@ -93,10 +144,20 @@ class AppPaths:
         self.root = Path(root or self._default_root()).expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
         self.project_root = self._project_root()
-        self.yaml = self.project_root / "config.yaml"
-        self.settings = self.root / "settings.json"
+        self.config_path = self._config_path()
+        # Compatibility alias retained for callers and tests.
+        self.yaml = self.config_path
         self.database = self.root / "monitor.sqlite3"
         self.log = self.root / "app.log"
+
+    @classmethod
+    def _config_path(cls) -> Path:
+        # The YAML beside the executable (or at the project root in source
+        # mode) is the only supported configuration source.
+        import sys
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "config.yaml"
+        return cls._project_root() / "config.yaml"
 
     @staticmethod
     def _project_root() -> Path:
@@ -122,81 +183,169 @@ class ConfigStore:
         self.paths = paths
         self.logger = logger or logging.getLogger(__name__)
 
-    def load(self) -> AppConfig:
-        values: dict[str, Any] = {
-            "base_url": DEFAULT_BASE_URL,
-            "web_host": DEFAULT_WEB_HOST,
-            "web_port": DEFAULT_WEB_PORT,
-            "poll_interval_seconds": 60,
-            "heartbeat_interval_seconds": 300,
-            "lookback_hours": 24,
-            "page_size": 50,
-            "auto_sync": True,
-            "ca_bundle": None,
-            "target_process_title": DEFAULT_TARGET_PROCESS_TITLE,
-            "target_process_key": DEFAULT_TARGET_PROCESS_KEY,
-            "target_title_keywords": DEFAULT_TARGET_TITLE_KEYWORDS,
-            "auto_claim_pending_tasks": False,
-        }
-        if self.paths.yaml.exists():
+    @staticmethod
+    def _coerce_field(name: str, value: Any) -> Any:
+        if name in {
+            "web_port", "poll_interval_seconds", "heartbeat_interval_seconds", "lookback_hours", "page_size",
+            "work_order_retention_days", "work_order_event_retention_days", "sync_run_retention_days",
+            "database_cleanup_interval_seconds", "database_cleanup_batch_size", "database_max_size_mb", "wal_max_size_mb",
+        }:
+            if isinstance(value, bool):
+                raise ValueError("必须是整数")
             try:
-                raw_yaml = yaml.safe_load(self.paths.yaml.read_text(encoding="utf-8"))
-                if raw_yaml is None:
-                    raw_yaml = {}
-                if not isinstance(raw_yaml, dict):
-                    raise ValueError("YAML 配置顶层必须是对象")
-                values.update(raw_yaml)
-                if "target_title_keywords" not in raw_yaml and "target_title_keyword" in raw_yaml:
-                    values["target_title_keywords"] = (raw_yaml["target_title_keyword"],)
-                values.pop("target_title_keyword", None)
-            except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
-                self.logger.warning("根目录 YAML 配置无效，将使用默认配置: %s", type(exc).__name__)
-        if self.paths.settings.exists():
-            try:
-                raw = json.loads(self.paths.settings.read_text(encoding="utf-8"))
-                if not isinstance(raw, dict):
-                    raise ValueError("设置文件格式错误")
-                for key in (
-                    "base_url", "poll_interval_seconds", "heartbeat_interval_seconds",
-                    "lookback_hours", "page_size", "auto_sync", "ca_bundle",
-                ):
-                    if key in raw:
-                        values[key] = raw[key]
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                self.logger.warning("本地设置无效，将忽略运行时设置: %s", type(exc).__name__)
+                return int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("必须是整数") from exc
+        if name in {"auto_sync", "auto_claim_pending_tasks"}:
+            if not isinstance(value, bool):
+                raise ValueError("必须是布尔值")
+            return value
+        if name == "ca_bundle":
+            if value in (None, ""):
+                return None
+            if not isinstance(value, str):
+                raise ValueError("必须是文件路径或 null")
+            return value
+        if name == "target_title_keywords":
+            return normalize_title_keywords(value)
+        if name in {"base_url", "web_host", "target_process_title", "target_process_key"}:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("必须是非空字符串")
+            return value
+        raise ValueError("未知配置字段")
+
+    @staticmethod
+    def _validate_field(name: str, value: Any) -> None:
+        if name == "base_url":
+            parsed = urlparse(value)
+            if parsed.scheme != "https" or not parsed.netloc:
+                raise ValueError("必须是 HTTPS 地址")
+        elif name == "web_port" and not 1 <= value <= 65535:
+            raise ValueError("超出允许范围[1,65535]")
+        elif name == "poll_interval_seconds" and not 5 <= value <= 3600:
+            raise ValueError("超出允许范围[5,3600]")
+        elif name == "heartbeat_interval_seconds" and not 30 <= value <= 86400:
+            raise ValueError("超出允许范围[30,86400]")
+        elif name == "lookback_hours" and not 1 <= value <= 720:
+            raise ValueError("超出允许范围[1,720]")
+        elif name == "page_size" and not 10 <= value <= 500:
+            raise ValueError("超出允许范围[10,500]")
+        elif name in {"work_order_retention_days", "work_order_event_retention_days", "sync_run_retention_days"} and value < 0:
+            raise ValueError("必须大于等于 0")
+        elif name == "database_cleanup_interval_seconds" and not 60 <= value <= 86400:
+            raise ValueError("超出允许范围[60,86400]")
+        elif name == "database_cleanup_batch_size" and not 1 <= value <= 10000:
+            raise ValueError("超出允许范围[1,10000]")
+        elif name in {"database_max_size_mb", "wal_max_size_mb"} and value < 0:
+            raise ValueError("必须大于等于 0")
+        elif name == "ca_bundle" and value and not Path(value).is_file():
+            raise ValueError("指定的 CA 文件不存在")
+
+    def _parse_source(self, path: Path) -> dict[str, Any]:
         try:
-            for key in ("web_port", "poll_interval_seconds", "heartbeat_interval_seconds", "lookback_hours", "page_size"):
-                values[key] = int(values[key])
-            if isinstance(values["target_title_keywords"], list):
-                values["target_title_keywords"] = tuple(values["target_title_keywords"])
-            if not isinstance(values["auto_sync"], bool):
-                raise ValueError("auto_sync 必须是布尔值")
-            if not isinstance(values["auto_claim_pending_tasks"], bool):
-                raise ValueError("auto_claim_pending_tasks 必须是布尔值")
-            values["ca_bundle"] = values.get("ca_bundle") or None
-            return AppConfig(**values)
-        except (ValueError, TypeError) as exc:
-            self.logger.warning("配置值无效，将使用默认配置: %s", type(exc).__name__)
-            return AppConfig()
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if raw is None:
+                return {}
+            if not isinstance(raw, dict):
+                raise ValueError("顶层必须是对象")
+            return dict(raw)
+        except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+            raise ValueError(f"配置文件解析失败: {path}: {type(exc).__name__}") from exc
+
+    def _apply_source(self, values: dict[str, Any], raw: dict[str, Any], allowed_keys: set[str]) -> None:
+        if "target_title_keywords" not in raw and "target_title_keyword" in raw:
+            raw = dict(raw)
+            raw["target_title_keywords"] = (raw["target_title_keyword"],)
+            raw.pop("target_title_keyword", None)
+        for key in sorted(set(raw) - allowed_keys):
+            raise ValueError(f"配置文件包含未知字段: {key}")
+        for key, value in raw.items():
+            try:
+                candidate = self._coerce_field(key, value)
+                self._validate_field(key, candidate)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"配置字段无效: {key}: {exc}") from exc
+            values[key] = candidate
+
+    def load(self) -> AppConfig:
+        allowed_keys = {field.name for field in fields(AppConfig)}
+        if not self.paths.yaml.exists():
+            raise FileNotFoundError(f"必须提供配置文件: {self.paths.yaml}")
+        raw = self._parse_source(self.paths.yaml)
+        if not raw:
+            raise ValueError(f"配置文件为空或无效: {self.paths.yaml}")
+        values: dict[str, Any] = {}
+        self._apply_source(values, raw, allowed_keys)
+        missing = sorted(allowed_keys - set(values))
+        if missing:
+            raise ValueError(f"配置文件缺少字段: {', '.join(missing)}")
+        config = AppConfig(**values)
+        self.logger.info(
+            "配置已加载: path=%s target_title_keywords=%s data_dir=%s",
+            self.paths.yaml.resolve(), list(config.target_title_keywords), self.paths.root.resolve(),
+        )
+        return config
 
     def save(self, config: AppConfig) -> None:
-        payload = {
-            "base_url": config.base_url,
-            "poll_interval_seconds": config.poll_interval_seconds,
-            "heartbeat_interval_seconds": config.heartbeat_interval_seconds,
-            "lookback_hours": config.lookback_hours,
-            "page_size": config.page_size,
-            "auto_sync": config.auto_sync,
-            "ca_bundle": config.ca_bundle,
-        }
-        temp = self.paths.settings.with_suffix(".tmp")
-        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temp, self.paths.settings)
+        payload = config_to_dict(config)
+        temp = self.paths.yaml.with_suffix(".tmp")
+        temp.write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        os.replace(temp, self.paths.yaml)
 
 
 SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(password|passwd|captcha|msgCode|CASTGC|JSESSIONID|TGC|ticket|token|cookie)"
+    r"(?i)(?:password|passwd|captcha|msgcode|castgc|jsessionid|tgc|ticket|token|cookie|"
+    r"authorization|set-cookie|api[_-]?key|secret|sms[_-]?code|verification[_-]?code|"
+    r"session[_-]?id|access[_-]?token|refresh[_-]?token)"
 )
+_SENSITIVE_KEY_VALUE_RE = re.compile(
+    r"(?P<prefix>(?<![\w-])(?:password|passwd|captcha|msgcode|castgc|jsessionid|tgc|ticket|token|cookie|"
+    r"authorization|set-cookie|api[_-]?key|secret|sms[_-]?code|verification[_-]?code|session[_-]?id|"
+    r"access[_-]?token|refresh[_-]?token)[\"']?\s*[:=]\s*)"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
+    re.IGNORECASE,
+)
+_SENSITIVE_UNQUOTED_VALUE_RE = re.compile(
+    r"(?P<prefix>(?<![\w-])(?:password|passwd|captcha|msgcode|castgc|jsessionid|tgc|ticket|token|cookie|"
+    r"authorization|set-cookie|api[_-]?key|secret|sms[_-]?code|verification[_-]?code|session[_-]?id|"
+    r"access[_-]?token|refresh[_-]?token)(?:[\"']?\s*[:=]\s*)"
+    r"(?![\"'])"
+    r")(?P<value>(?!\[REDACTED\])[^\s,;&}\]]+)",
+    re.IGNORECASE,
+)
+_BEARER_RE = re.compile(r"(?i)(\bBearer\s+)(?!\[REDACTED\])[^\s,;]+")
+_COOKIE_HEADER_RE = re.compile(r"(?i)(\b(?:Cookie|Set-Cookie):\s*)([^\r\n]+)")
+
+
+def _redact_quoted(match: re.Match[str]) -> str:
+    return f"{match.group('prefix')}{match.group('quote')}[REDACTED]{match.group('quote')}"
+
+
+def _redact_cookie_header(match: re.Match[str]) -> str:
+    header, value = match.groups()
+    return header + redact_sensitive_data(value)
+
+
+def redact_sensitive_data(text: str) -> str:
+    """Redact credential values in log messages, headers, URLs, and tracebacks."""
+    if not text:
+        return text
+    cookie_values: list[str] = []
+
+    def hold_cookie(match: re.Match[str]) -> str:
+        cookie_values.append(_redact_cookie_header(match))
+        return f"__REDACTED_COOKIE_{len(cookie_values) - 1}__"
+
+    redacted = _COOKIE_HEADER_RE.sub(hold_cookie, text)
+    redacted = _BEARER_RE.sub(r"\1[REDACTED]", redacted)
+    redacted = _SENSITIVE_KEY_VALUE_RE.sub(_redact_quoted, redacted)
+    redacted = _SENSITIVE_UNQUOTED_VALUE_RE.sub(r"\g<prefix>[REDACTED]", redacted)
+    for index, value in enumerate(cookie_values):
+        redacted = redacted.replace(f"__REDACTED_COOKIE_{index}__", value)
+    return redacted
 
 
 def configure_logging(paths: AppPaths) -> logging.Logger:
@@ -220,7 +369,7 @@ def configure_logging(paths: AppPaths) -> logging.Logger:
     class RedactingFormatter(logging.Formatter):
         def format(self, record: logging.LogRecord) -> str:
             message = super().format(record)
-            return SENSITIVE_KEY_RE.sub("[REDACTED]", message)
+            return redact_sensitive_data(message)
 
     handler = logging.FileHandler(paths.log, encoding="utf-8")
     handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(message)s"))
@@ -246,4 +395,11 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
         "target_process_key": config.target_process_key,
         "target_title_keywords": list(config.target_title_keywords),
         "auto_claim_pending_tasks": config.auto_claim_pending_tasks,
+        "work_order_retention_days": config.work_order_retention_days,
+        "work_order_event_retention_days": config.work_order_event_retention_days,
+        "sync_run_retention_days": config.sync_run_retention_days,
+        "database_cleanup_interval_seconds": config.database_cleanup_interval_seconds,
+        "database_cleanup_batch_size": config.database_cleanup_batch_size,
+        "database_max_size_mb": config.database_max_size_mb,
+        "wal_max_size_mb": config.wal_max_size_mb,
     }
