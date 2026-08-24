@@ -6,6 +6,7 @@
  * 在页面加载时查询一次。
  */
 (() => {
+  const page = document.querySelector('.orders-page');
   const status = document.querySelector('#orders-refresh-status');
   const rows = document.querySelector('#orders-rows');
   const total = document.querySelector('#orders-total');
