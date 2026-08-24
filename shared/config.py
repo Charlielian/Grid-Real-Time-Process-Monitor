@@ -227,9 +227,9 @@ class AppPaths:
         if override:
             return Path(override)
         if getattr(__import__("sys"), "frozen", False):
-            local_app_data = os.environ.get("LOCALAPPDATA")
-            if local_app_data:
-                return Path(local_app_data) / "GridRealtimeMonitor"
+            # 打包为 exe 时，数据库和日志放在 exe 同目录下
+            import sys
+            return Path(sys.executable).resolve().parent / "data"
         # 默认将运行数据放在项目根目录的 data/ 下；环境变量可覆盖该位置。
         return Path(__file__).resolve().parents[1] / "data"
 
