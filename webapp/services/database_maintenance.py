@@ -1,3 +1,9 @@
+"""数据库维护后台服务。
+
+服务按配置周期执行历史清理和 SQLite 维护，并把异常限制在当前周期内；shutdown
+使用有限等待，避免关闭应用时维护线程阻塞主进程生命周期。
+"""
+
 from __future__ import annotations
 
 import logging

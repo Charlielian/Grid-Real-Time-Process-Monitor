@@ -1,3 +1,9 @@
+"""为前端提供 JSON API 的路由模块。
+
+接口统一执行会话鉴权和 CSRF 校验，并把平台异常转换成稳定的 JSON 错误码。
+工单筛选参数与页面路由共用 parse_order_filters，保证首屏和局部刷新语义一致。
+"""
+
 from __future__ import annotations
 
 import json

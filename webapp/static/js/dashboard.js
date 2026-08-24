@@ -1,3 +1,8 @@
+/*
+ * 总览页的手动同步控制器。
+ * 提交异步同步任务后只轮询任务状态，不重复提交；同步成功时刷新总览数据，
+ * 页面离开时清理定时器，避免后台继续访问已经不可见的页面。
+ */
 (() => {
   const button = document.querySelector('#sync-now');
   const status = document.querySelector('#sync-status');

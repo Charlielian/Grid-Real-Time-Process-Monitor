@@ -1,3 +1,10 @@
+"""异步同步任务管理器。
+
+每个同步任务在单进程 executor 中执行，并通过 job_id 对外暴露快照。状态访问和
+取消操作由锁保护；取消/关闭只等待到调用方给出的 deadline，因为底层 requests
+不能被线程安全地强制中断，超时后依靠协作式取消和有限资源释放保证应用退出。
+"""
+
 from __future__ import annotations
 
 import threading

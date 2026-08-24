@@ -1,3 +1,5 @@
+"""数据库维护线程的周期执行、异常隔离和关闭行为测试。"""
+
 from __future__ import annotations
 
 import logging

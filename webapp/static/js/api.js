@@ -1,4 +1,12 @@
+/*
+ * 页面端统一 API 客户端。
+ *
+ * 所有页面脚本都通过这里访问 Flask API，以便统一处理 CSRF、JSON 编码、
+ * 超时、AbortController 取消、登录失效跳转以及仅对安全请求进行有限重试。
+ * 这里不直接决定业务提示文案；业务页面只需要处理结构化的 ApiError。
+ */
 (() => {
+  /** 表示 HTTP、网络、超时或响应格式错误，并保留可用于恢复的上下文。 */
   class ApiError extends Error {
     constructor(message, {status = 0, code = 'request_failed', cause = undefined} = {}) {
       super(message);
@@ -27,6 +35,12 @@
     return false;
   };
 
+  /**
+   * 发起一个带统一错误处理和有限退避重试的 API 请求。
+   *
+   * GET/HEAD 默认允许重试；修改数据的请求默认不重试，避免网络超时后
+   * 无法判断服务端是否已经成功执行时重复提交。调用方可通过 signal 取消请求。
+   */
   const request = async (url, options = {}) => {
     const method = (options.method || 'GET').toUpperCase();
     const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : 10000;

@@ -1,2 +1,3 @@
 {% extends 'base.html' %}
+{# 统一的错误页；message 由路由提供，并经过 Jinja 默认转义后展示。 #}
 {% block content %}<section class="card"><h1>页面不存在</h1><p>{{ message }}</p></section>{% endblock %}

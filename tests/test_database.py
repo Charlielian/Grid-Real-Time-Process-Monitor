@@ -1,3 +1,9 @@
+"""数据库筛选、写入、事务和维护策略的回归测试。
+
+测试使用临时 SQLite 文件，数据只在当前测试生命周期内存在；每个断言对应
+数据库层的一项业务约束，例如城市 OR、日期半开区间、状态筛选或 upsert。
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

@@ -1,3 +1,9 @@
+"""平台 HTTP 客户端的响应解析和错误分类测试。
+
+FakeResponse 避免真实网络请求，重点验证登录页与普通 HTML、业务错误、HTTP
+错误及平台返回字段之间的边界，保证网络故障不会误报为认证失效。
+"""
+
 from __future__ import annotations
 
 import logging

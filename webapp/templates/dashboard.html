@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{# 总览首屏由服务端统计渲染，dashboard.js 只负责提交和轮询异步同步任务。 #}
 {% block content %}
 <div class="page-header"><h1>监控总览</h1><button class="button" id="sync-now">立即同步</button></div>
 <div class="cards">

@@ -1,3 +1,10 @@
+"""HTML 页面路由。
+
+页面路由负责把认证上下文、配置和数据库查询结果组合成模板上下文。工单页
+将重复 city 参数和日期范围交给共享解析器，再把规范化值回填页面，确保分页
+链接和 JavaScript 局部刷新继续使用同一组筛选条件。
+"""
+
 from __future__ import annotations
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
@@ -76,8 +83,8 @@ def orders() -> str:
     except ValueError as exc:
         return render_template("not_found.html", message=str(exc)), 400
     city_keywords = filters.pop("city")
-    filters.pop("start_date")
-    filters.pop("end_date")
+    start_date = filters.pop("start_date")
+    end_date = filters.pop("end_date")
     rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=city_keywords, **filters)
     total = db.count_work_orders(title_keywords=city_keywords, **filters)
     pages = max(1, (total + page_size - 1) // page_size)
@@ -88,7 +95,7 @@ def orders() -> str:
         page=page,
         pages=pages,
         page_size=page_size,
-        filters={**filters, "city": city_keywords, "start_date": request.args.get("start_time", ""), "end_date": request.args.get("end_time", "")},
+        filters={**filters, "city": city_keywords, "start_date": start_date, "end_date": end_date},
         cities=GUANGDONG_CITIES,
         selected_cities=city_keywords,
         poll_interval_seconds=config.poll_interval_seconds,

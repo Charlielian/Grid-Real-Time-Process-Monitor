@@ -1,5 +1,11 @@
+/*
+ * 待领取任务列表控制器。
+ *
+ * 普通刷新和自动领取是两条独立流程：网络失败或自动领取熔断只会影响对应动作，
+ * 不会阻止列表继续刷新。渲染使用 DOM API/textContent，避免把上游标题直接拼接
+ * 到 HTML；页面隐藏时取消请求，恢复可见后再补偿加载当前 URL 的筛选结果。
+ */
 (() => {
-  const page = document.querySelector('.pending-page');
   const rows = document.querySelector('#pending-rows');
   const message = document.querySelector('#pending-message');
   const refresh = document.querySelector('#pending-refresh');

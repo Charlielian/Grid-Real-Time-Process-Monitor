@@ -1,3 +1,11 @@
+"""SQLite 数据访问层。
+
+数据库使用每次操作短连接和 WAL 日志模式：读操作独立关闭连接，写操作通过
+事务上下文在成功时提交、异常时回滚。工单采用主键 upsert，并在状态、节点或
+处理人变化时记录事件；批量同步可复用同一连接，避免每条记录单独提交。查询
+方法通过参数绑定处理筛选条件，分页上限和清理批次上限用于控制资源占用。
+"""
+
 from __future__ import annotations
 
 import sqlite3
@@ -16,6 +24,7 @@ _COMPLETED_STATUSES = ("已办结", "completed", "done")
 
 @dataclass(frozen=True, slots=True)
 class DatabaseMaintenanceStats:
+    """一次保留策略清理操作的删除数量和文件大小快照。"""
     work_orders_deleted: int = 0
     events_deleted: int = 0
     sync_runs_deleted: int = 0
@@ -27,11 +36,17 @@ class Database:
     """SQLite repository with short-lived connections per operation."""
 
     def __init__(self, path: Path | str) -> None:
+        """初始化数据库路径并创建缺失的父目录和表结构。"""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
+        """创建短生命周期 SQLite 连接。
+
+        WAL 允许读写并发，busy_timeout 为写锁竞争提供最多 30 秒等待；调用方
+        必须通过 ``_transaction`` 或 ``_read`` 管理连接关闭。
+        """
         connection = sqlite3.connect(str(self.path), timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 30000")
@@ -40,6 +55,7 @@ class Database:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """提供事务连接，正常退出提交，任意异常回滚后重新抛出。"""
         connection = self._connect()
         try:
             yield connection
@@ -52,6 +68,7 @@ class Database:
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
+        """提供只读语义的短连接；退出时关闭连接，不执行提交。"""
         connection = self._connect()
         try:
             yield connection
@@ -59,6 +76,7 @@ class Database:
             connection.close()
 
     def _initialize(self) -> None:
+        """以幂等 DDL 创建工单、事件、同步运行和账号设置表及索引。"""
         with self._transaction() as connection:
             connection.executescript(
                 """
@@ -120,12 +138,14 @@ class Database:
             )
 
     def file_sizes(self) -> tuple[int, int]:
+        """返回主数据库文件和 WAL 文件当前字节数，缺失文件按零计。"""
         database_size = self.path.stat().st_size if self.path.exists() else 0
         wal_path = Path(f"{self.path}-wal")
         wal_size = wal_path.stat().st_size if wal_path.exists() else 0
         return database_size, wal_size
 
     def checkpoint_wal(self) -> None:
+        """以 PASSIVE 模式请求 WAL checkpoint，不阻塞现有读写事务。"""
         with self._read() as connection:
             connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
@@ -137,6 +157,12 @@ class Database:
         sync_run_cutoff: str | None = None,
         batch_size: int = 500,
     ) -> DatabaseMaintenanceStats:
+        """按截止时间分批删除历史数据并返回维护统计。
+
+        每次调用在一个事务中完成，``batch_size`` 被限制在 1 到 10000，防止
+        单次 DELETE 持锁过久。工单删除前先删除关联事件；同步运行只删除已
+        完成且早于截止时间的记录。提交后再读取文件大小，因此统计反映提交态。
+        """
         batch_size = max(1, min(int(batch_size), 10000))
         work_orders_deleted = events_deleted = sync_runs_deleted = 0
         with self._transaction() as connection:
@@ -175,6 +201,11 @@ class Database:
         )
 
     def upsert_work_order(self, order: WorkOrder, connection: sqlite3.Connection | None = None) -> tuple[bool, list[tuple[str, str, str | None]]]:
+        """插入或更新单个工单，并返回是否新增及生成的事件。
+
+        传入连接时复用调用方事务，不单独提交或关闭；不传连接时自行管理短
+        事务。事件只记录状态、节点、处理人变化，新增工单生成 ``added`` 事件。
+        """
         owns_connection = connection is None
         if owns_connection:
             connection = self._connect()
@@ -188,6 +219,7 @@ class Database:
             if existing is None:
                 events.append(("added", "", order.status))
             else:
+                # 仅业务状态字段变化才写事件，避免每次轮询都制造噪声。
                 for field, event_type in (
                     ("status", "status_changed"),
                     ("current_node", "node_changed"),
@@ -235,6 +267,7 @@ class Database:
                 connection.close()
 
     def upsert_orders(self, orders: list[WorkOrder]) -> tuple[int, int, int]:
+        """在一个事务中批量 upsert，返回总数、新增数和变化事件数。"""
         added = 0
         changed = 0
         with self._transaction() as connection:
@@ -254,6 +287,7 @@ class Database:
         end_time: str = "",
         title_keywords: tuple[str, ...] | list[str] = (),
     ) -> tuple[str, list[Any]]:
+        """构造参数化工单 WHERE 子句及其参数，不直接拼接用户值。"""
         where: list[str] = []
         params: list[Any] = []
         if title_keywords:
@@ -297,6 +331,7 @@ class Database:
         title_keywords: tuple[str, ...] | list[str] = (),
         title_keyword: str = "",
     ) -> list[sqlite3.Row]:
+        """按筛选条件倒序分页读取工单，限制单页最多 500 条。"""
         keywords = tuple(title_keywords) or ((title_keyword,) if title_keyword else ())
         clause, params = self._work_order_filter_clause(
             keyword=keyword,
@@ -323,6 +358,7 @@ class Database:
         title_keywords: tuple[str, ...] | list[str] = (),
         title_keyword: str = "",
     ) -> int:
+        """统计与筛选条件匹配的工单数量。"""
         keywords = tuple(title_keywords) or ((title_keyword,) if title_keyword else ())
         clause, params = self._work_order_filter_clause(
             keyword=keyword,
@@ -343,6 +379,7 @@ class Database:
         title_keywords: tuple[str, ...] | list[str] = (),
         title_keyword: str = "",
     ) -> sqlite3.Row | None:
+        """按工单 ID 查询单条记录，可额外按标题关键词过滤。"""
         keywords = tuple(title_keywords) or ((title_keyword,) if title_keyword else ())
         with self._read() as connection:
             if keywords:
@@ -360,6 +397,7 @@ class Database:
         title_keywords: tuple[str, ...] | list[str] = (),
         title_keyword: str = "",
     ) -> sqlite3.Row | None:
+        """按平台任务 ID 查询工单，并兼容标题关键词过滤。"""
         keywords = tuple(title_keywords) or ((title_keyword,) if title_keyword else ())
         with self._read() as connection:
             if keywords:
@@ -371,6 +409,7 @@ class Database:
             return connection.execute("SELECT * FROM work_orders WHERE task_id = ?", (task_id,)).fetchone()
 
     def list_events(self, order_id: str, limit: int = 100) -> list[sqlite3.Row]:
+        """按工单读取最近事件，结果倒序且单次最多 500 条。"""
         with self._read() as connection:
             return list(connection.execute(
                 "SELECT * FROM work_order_events WHERE order_id = ? ORDER BY id DESC LIMIT ?",
@@ -383,6 +422,7 @@ class Database:
         title_keywords: tuple[str, ...] | list[str] = (),
         title_keyword: str = "",
     ) -> dict[str, Any]:
+        """返回总量、活动量、今日新增量和按当前节点聚合的看板统计。"""
         today = datetime.now().date().isoformat()
         keywords = tuple(title_keywords) or ((title_keyword,) if title_keyword else ())
         clause, params = self._work_order_filter_clause(title_keywords=keywords)
@@ -408,6 +448,7 @@ class Database:
             }
 
     def start_sync_run(self, started_at: str | None = None) -> int:
+        """创建同步运行记录并返回自增 ID。"""
         with self._transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO sync_runs(started_at) VALUES (?)",
@@ -416,6 +457,7 @@ class Database:
             return int(cursor.lastrowid)
 
     def finish_sync_run(self, run_id: int, *, total: int = 0, added: int = 0, changed: int = 0, error: str | None = None) -> None:
+        """以当前 UTC 时间完成同步记录，并保存统计或错误标记。"""
         with self._transaction() as connection:
             connection.execute(
                 "UPDATE sync_runs SET finished_at = ?, total = ?, added = ?, changed = ?, error = ? WHERE id = ?",
@@ -423,10 +465,12 @@ class Database:
             )
 
     def latest_sync_run(self) -> sqlite3.Row | None:
+        """返回最近创建的一次同步运行记录。"""
         with self._read() as connection:
             return connection.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
 
     def upsert_saved_account(self, login_id: str, display_name: str = "") -> None:
+        """新增或更新保存账号，并刷新其最后使用时间；空账号忽略。"""
         if not login_id:
             return
         now = datetime.now(timezone.utc).isoformat()
@@ -443,18 +487,21 @@ class Database:
             )
 
     def list_saved_accounts(self) -> list[sqlite3.Row]:
+        """按最近使用时间倒序返回保存账号。"""
         with self._read() as connection:
             return list(connection.execute(
                 "SELECT * FROM saved_accounts ORDER BY last_used_at DESC, login_id ASC"
             ))
 
     def get_saved_account(self, login_id: str) -> sqlite3.Row | None:
+        """按登录 ID 返回保存账号，找不到时返回 ``None``。"""
         with self._read() as connection:
             return connection.execute(
                 "SELECT * FROM saved_accounts WHERE login_id = ?", (login_id,)
             ).fetchone()
 
     def remove_saved_account(self, login_id: str) -> None:
+        """删除保存账号记录；事务提交后生效。"""
         with self._transaction() as connection:
             connection.execute("DELETE FROM saved_accounts WHERE login_id = ?", (login_id,))
 
@@ -467,6 +514,11 @@ class Database:
         error: str | None = None,
         consecutive_failures: int | None = None,
     ) -> None:
+        """更新账号心跳状态、错误和连续失败次数。
+
+        ``heartbeat_at`` 未提供时使用当前 UTC 时间；失败次数为 ``None`` 时保留
+        原值，允许只更新状态或错误。不存在的账号不会被隐式创建。
+        """
         if not login_id:
             return
         now = heartbeat_at or datetime.now(timezone.utc).isoformat()
@@ -482,11 +534,13 @@ class Database:
             )
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
+        """读取应用设置，不存在时返回调用方提供的默认值。"""
         with self._read() as connection:
             row = connection.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
             return str(row["value"]) if row else default
 
     def save_setting(self, key: str, value: str) -> None:
+        """以主键 upsert 保存应用设置。"""
         with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

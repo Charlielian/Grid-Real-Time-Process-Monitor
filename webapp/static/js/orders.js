@@ -1,5 +1,12 @@
+/*
+ * 工单列表的自动同步与局部刷新控制器。
+ *
+ * 自动同步是异步任务：先提交一次任务，再按 job_id 轮询状态。成功后只重建
+ * #orders-rows 和总数，不整页刷新，从而保留当前筛选条件和页面滚动位置。
+ * sessionStorage 用来跨页面刷新保存未完成的 job_id；网络异常时宁可延迟重试，
+ * 也不在任务状态未知时重复提交同步任务。
+ */
 (() => {
-  const page = document.querySelector('.orders-page');
   const status = document.querySelector('#orders-refresh-status');
   const bubble = document.querySelector('#new-orders-bubble');
   const message = document.querySelector('#new-orders-message');

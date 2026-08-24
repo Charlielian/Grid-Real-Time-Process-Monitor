@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Web 层应用工厂：集中装配 Flask、鉴权上下文、数据库、同步任务和后台监控。
+# 本模块只负责生命周期与依赖关系；具体 HTTP 输入校验和响应格式由 routes 子模块处理。
+
 import secrets
 import threading
 import time
@@ -18,6 +21,11 @@ from webapp.services.sync import SyncJobManager
 
 
 def _secret_key(paths: AppPaths, test_config: dict[str, Any] | None) -> str:
+    """按配置、环境变量、磁盘文件的优先级取得 Flask 会话签名密钥。
+
+    密钥文件仅在没有外部配置时生成，并尽量收紧权限；文件系统不可写时退回
+    到进程内随机值，保证应用仍能启动，但该退回值不会跨进程或重启保留。
+    """
     configured = (test_config or {}).get("SECRET_KEY") or __import__("os").environ.get("GRID_MONITOR_SECRET_KEY")
     if configured:
         return str(configured)
@@ -35,6 +43,11 @@ def _secret_key(paths: AppPaths, test_config: dict[str, Any] | None) -> str:
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
+    """创建并装配 Web 应用，同时启动非测试环境需要的后台服务。
+
+    ``test_config`` 用于测试时覆盖路径、配置和 Flask 选项。应用关闭时通过统一
+    shutdown 回调按同步任务、监控、维护、会话注册表、数据库的顺序释放资源。
+    """
     app = Flask(__name__, template_folder="templates", static_folder="static")
     paths = AppPaths((test_config or {}).get("DATA_DIR") if test_config else None)
     logger = configure_logging(paths)

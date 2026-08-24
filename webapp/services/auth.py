@@ -1,3 +1,10 @@
+"""Web 会话上下文、持久化 Cookie 和会话注册表服务。
+
+浏览器 session 只保存短标识，实际平台客户端和 Cookie 存在进程内注册表中。
+注册表使用锁保护并发访问；关闭或失效时清理回调与资源，避免多个请求共享
+已被释放的会话对象。
+"""
+
 from __future__ import annotations
 
 import hashlib

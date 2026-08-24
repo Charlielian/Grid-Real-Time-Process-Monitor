@@ -1,5 +1,10 @@
+/*
+ * 登录页交互控制器。
+ *
+ * 负责验证码刷新与校验、短信发送倒计时、登录提交、保存会话恢复和心跳检查。
+ * 所有 POST 都经由共享 GridApi.request 发送，因此 CSRF、超时和错误分类保持一致。
+ */
 (() => {
-  const form = document.querySelector('#login-form');
   const image = document.querySelector('#captcha-image');
   const message = document.querySelector('#message');
   const csrf = () => form.querySelector('[name=csrf_token]').value;

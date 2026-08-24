@@ -1,3 +1,10 @@
+"""Web 页面、API 鉴权、筛选参数和前端静态契约测试。
+
+fixture 为每个测试创建临时数据目录和 Flask 应用，并在结束时关闭后台服务及日志
+handler。页面脚本采用源码契约断言，确保关键 DOM ID、共享 API、城市选择器和
+轮询恢复逻辑不会在重构时被意外删除。
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -49,11 +56,29 @@ def test_order_filter_parser_preserves_multiple_cities_and_full_end_day() -> Non
     assert filters["end_time"] == "2026-08-21 00:00:00"
 
 
-def test_order_filter_parser_rejects_invalid_city_and_date() -> None:
+def test_order_filter_parser_defaults_to_last_seven_days(monkeypatch) -> None:
+    from datetime import date
     from werkzeug.datastructures import MultiDict
     from shared.filters import parse_order_filters
 
-    import pytest
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 21)
+
+    monkeypatch.setattr("shared.filters.date", FixedDate)
+    filters = parse_order_filters(MultiDict())
+    assert filters["start_date"] == "2026-08-15"
+    assert filters["end_date"] == "2026-08-21"
+    assert filters["start_time"] == "2026-08-15 00:00:00"
+    assert filters["end_time"] == "2026-08-22 00:00:00"
+
+
+def test_order_filter_parser_rejects_invalid_city_and_date() -> None:
+    """非法地市和非法日期必须在进入数据库前被拒绝。"""
+    from werkzeug.datastructures import MultiDict
+    from shared.filters import parse_order_filters
+
     with pytest.raises(ValueError, match="不支持的地市"):
         parse_order_filters(MultiDict([("city", "不存在")]))
     with pytest.raises(ValueError, match="创建日期格式无效"):
@@ -173,6 +198,22 @@ def test_title_scope_and_scroll_layout(app) -> None:
     assert "overflow: auto" in css_text
     assert "position: fixed" in css_text
     assert "new-orders-bubble" in css_text
+    macros = open(app.root_path + "/templates/_macros.html", encoding="utf-8").read()
+    city_picker_js = open(app.root_path + "/static/js/city_picker.js", encoding="utf-8").read()
+    assert "data-city-picker" in macros
+    assert macros.count('name="city"') >= 1
+    assert "placeholder=\"输入或选择地市\"" in macros
+    assert "data-city-selected" in macros
+    assert "type=\"hidden\" name=\"city\"" in macros
+    assert "role=\"listbox\"" in macros
+    assert "data-city-search" in macros
+    assert "data-city-select-all" in macros
+    assert "data-city-clear" in macros
+    assert "已选" in city_picker_js
+    assert "data-city-suggestions" in city_picker_js
+    assert "data-city-remove" in city_picker_js
+    assert "if (isSelected(option.dataset.city)) removeCity" in city_picker_js
+    assert "aria-expanded" in city_picker_js
 
 
 def test_frontend_uses_shared_api_and_handles_failures(app) -> None:
@@ -183,7 +224,7 @@ def test_frontend_uses_shared_api_and_handles_failures(app) -> None:
     assert "2 ** attempt" in api
     assert "Retry-After" in api
     assert "Accept" in api
-    for name in ("login.js", "dashboard.js", "orders.js", "pending_tasks.js"):
+    for name in ("login.js", "dashboard.js", "orders.js", "pending_tasks.js", "city_picker.js"):
         assert "fetch(" not in open(static + name, encoding="utf-8").read()
     base = open(app.root_path + "/templates/base.html", encoding="utf-8").read()
     assert "js/api.js" in base

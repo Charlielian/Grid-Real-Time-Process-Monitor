@@ -1,3 +1,9 @@
+"""认证协议解析和配置持久化回归测试。
+
+测试用最小 HTML、临时配置路径和 fake 外部依赖覆盖登录页解析、RSA 加密、
+旧配置兼容、原子保存及敏感信息处理，避免真实访问上游平台。
+"""
+
 from __future__ import annotations
 
 import pytest

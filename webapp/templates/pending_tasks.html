@@ -1,4 +1,6 @@
 {% extends 'base.html' %}
+{% from '_macros.html' import city_picker %}
+{# 待领取页面的表格首屏由脚本加载；宏提交的重复 city 字段会被 API 原样解析。 #}
 {% block content %}
 <div class="pending-page" data-page-size="{{ page_size }}" data-poll-interval="{{ poll_interval_seconds }}" data-auto-claim="{{ 'true' if auto_claim_pending_tasks else 'false' }}">
   <div class="page-header">
@@ -8,7 +10,10 @@
     </div>
     <button type="button" class="button" id="pending-refresh">刷新</button>
   </div>
-  <form class="filters" method="get"><select name="city" multiple size="4" aria-label="地市">{% for city in cities %}<option value="{{ city }}" {% if city in selected_cities %}selected{% endif %}>{{ city }}</option>{% endfor %}</select><button class="button" type="submit">筛选</button></form>
+  <form class="filters pending-filters" method="get">
+    {{ city_picker(cities, selected_cities, 'pending-city') }}
+    <button class="button filter-submit" type="submit">筛选</button>
+  </form>
   <div id="pending-message" class="muted" role="status"></div>
   <noscript>人工领取</noscript>
   <section class="card table-wrap pending-table-wrap">
@@ -17,4 +22,4 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/pending_tasks.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/city_picker.js') }}"></script><script src="{{ url_for('static', filename='js/pending_tasks.js') }}"></script>{% endblock %}

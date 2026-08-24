@@ -1,3 +1,9 @@
+"""浏览器登录流程和已保存会话管理路由。
+
+本模块只负责 HTTP 输入输出和错误映射，认证协议由 backend.auth 和平台客户端
+实现。真正的 SessionExpired 才返回登录失效；网络异常保留为可重试的服务错误。
+"""
+
 from __future__ import annotations
 
 from io import BytesIO

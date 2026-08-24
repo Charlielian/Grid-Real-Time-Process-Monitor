@@ -1,3 +1,10 @@
+"""已保存账号的后台会话心跳服务。
+
+心跳线程不依赖浏览器页面，按配置周期验证 Cookie 会话并更新状态。单个账号或
+单轮网络失败不会终止整个线程；shutdown 设置停止标志并以 deadline 关闭会话，
+保证 WSGI 导入启动的后台服务可以有界退出。
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

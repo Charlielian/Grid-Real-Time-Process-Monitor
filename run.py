@@ -1,3 +1,9 @@
+"""Flask/WSGI 入口。
+
+生产环境应由单 worker 的 Waitress、Gunicorn 或 uWSGI 导入 ``run:app``；仅在
+本地开发时执行文件本身。create_app 已负责非测试后台服务的幂等启动和统一关闭。
+"""
+
 from __future__ import annotations
 
 import os

@@ -1,3 +1,9 @@
+"""Web 页面和 JSON API 共用的安全装饰器。
+
+CSRF token 从 Flask session 取得；页面鉴权采用重定向，API 鉴权采用 401 JSON，
+这样浏览器导航和脚本请求都能得到适合自身场景的恢复行为。
+"""
+
 from __future__ import annotations
 
 from functools import wraps

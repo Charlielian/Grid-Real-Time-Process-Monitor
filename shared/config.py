@@ -1,3 +1,12 @@
+"""应用配置、路径、日志脱敏及 YAML 持久化工具。
+
+配置模型集中定义服务地址、轮询/心跳、分页、流程匹配和数据库保留策略，
+构造时执行范围与类型校验。配置文件加载要求字段完整并拒绝未知字段；保存
+采用临时文件写入、刷盘后原子替换，以避免进程中断留下半份配置，同时尽量
+保留既有 YAML 引号和格式。日志格式化阶段会脱敏认证令牌、Cookie、密码等
+敏感值，防止请求异常被记录时泄露凭据。
+"""
+
 from __future__ import annotations
 
 import logging
@@ -31,6 +40,11 @@ GUANGDONG_CITIES = (
 
 
 def normalize_cities(value: Any) -> tuple[str, ...]:
+    """校验并去重广东地市配置，返回稳定顺序的元组。
+
+    ``None`` 表示未筛选并返回空元组；字符串会兼容为单元素输入。非列表/
+    元组、空名称和不在白名单的城市均抛出 ``ValueError``。
+    """
     if value is None:
         return ()
     if isinstance(value, str):
@@ -39,6 +53,7 @@ def normalize_cities(value: Any) -> tuple[str, ...]:
         raise ValueError("city 必须是广东地市列表")
     normalized: list[str] = []
     for city in value:
+        # 白名单校验同时防止空值进入标题匹配条件。
         if not isinstance(city, str) or not city.strip():
             raise ValueError("city 必须是广东地市列表")
         city = city.strip()
@@ -50,7 +65,11 @@ def normalize_cities(value: Any) -> tuple[str, ...]:
 
 
 def normalize_title_keywords(value: Any) -> tuple[str, ...]:
-    """Normalize configured title fragments without merging in defaults."""
+    """规范化标题片段，不自动合并默认关键词。
+
+    输入必须是非空 list/tuple；每个关键词去除首尾空白并保持首次出现顺序，
+    重复项被丢弃，空项或错误类型抛出 ``ValueError``。
+    """
     if isinstance(value, list):
         value = tuple(value)
     if not isinstance(value, tuple):
@@ -75,11 +94,13 @@ TARGET_TITLE_KEYWORD = DEFAULT_TARGET_TITLE_KEYWORD
 
 
 def matches_title_keywords(title: str, keywords: tuple[str, ...] | list[str]) -> bool:
+    """判断标题是否包含任一关键词；空关键词集合始终返回 ``False``。"""
     return any(keyword in title for keyword in keywords)
 
 
 @dataclass(frozen=True)
 class AppConfig:
+    """应用运行时不可变配置及其边界校验。"""
     base_url: str = DEFAULT_BASE_URL
     web_host: str = DEFAULT_WEB_HOST
     web_port: int = DEFAULT_WEB_PORT
@@ -102,6 +123,8 @@ class AppConfig:
     wal_max_size_mb: int = 256
 
     def __post_init__(self) -> None:
+        """规范化并校验配置，确保网络、轮询、分页和维护参数可安全使用。"""
+        # frozen dataclass 仍需在构造阶段把关键词统一成去重元组。
         object.__setattr__(self, "target_title_keywords", normalize_title_keywords(self.target_title_keywords))
         parsed = urlparse(self.base_url)
         if parsed.scheme != "https" or not parsed.netloc:
@@ -149,16 +172,19 @@ class AppConfig:
             if value < minimum or (maximum is not None and value > maximum):
                 raise ValueError(f"{name} 超出允许范围")
 
+        # 指定 CA 文件必须在启动时存在，否则请求会在运行中才失败。
         if self.ca_bundle and not Path(self.ca_bundle).is_file():
             raise ValueError("指定的 CA 文件不存在")
 
     @property
     def origin(self) -> str:
+        """返回不含路径和查询参数的协议加主机地址。"""
         parsed = urlparse(self.base_url)
         return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def with_config_updates(config: AppConfig, **updates: Any) -> AppConfig:
+    """基于现有配置创建新实例，只替换给定字段并重新执行全部校验。"""
     values = {field.name: getattr(config, field.name) for field in fields(AppConfig)}
     values.update(updates)
     return AppConfig(**values)
@@ -168,6 +194,7 @@ class AppPaths:
     """应用数据路径，不依赖桌面 UI 框架。"""
 
     def __init__(self, root: Path | str | None = None) -> None:
+        """初始化应用数据路径；未指定 root 时使用环境和打包布局推导默认值。"""
         self.root = Path(root or self._default_root()).expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
         self.project_root = self._project_root()
@@ -179,6 +206,7 @@ class AppPaths:
 
     @classmethod
     def _config_path(cls) -> Path:
+        """按源码或冻结可执行文件布局定位唯一配置文件。"""
         # The YAML beside the executable (or at the project root in source
         # mode) is the only supported configuration source.
         import sys
@@ -188,12 +216,13 @@ class AppPaths:
 
     @staticmethod
     def _project_root() -> Path:
-        """Locate bundled resources in both source and PyInstaller layouts."""
+        """在源码和 PyInstaller 打包布局中定位资源根目录。"""
         bundle_root = Path(getattr(__import__("sys"), "_MEIPASS", Path(__file__).resolve().parents[1]))
         return bundle_root
 
     @staticmethod
     def _default_root() -> Path:
+        """根据环境变量、打包环境和源码布局确定数据目录。"""
         override = os.environ.get("GRID_MONITOR_DATA_DIR")
         if override:
             return Path(override)
@@ -206,12 +235,16 @@ class AppPaths:
 
 
 class ConfigStore:
+    """负责配置 YAML 的严格加载、兼容转换和原子保存。"""
+
     def __init__(self, paths: AppPaths, logger: logging.Logger | None = None) -> None:
+        """绑定路径和日志器；实际读写延迟到 ``load``/``save``。"""
         self.paths = paths
         self.logger = logger or logging.getLogger(__name__)
 
     @staticmethod
     def _coerce_field(name: str, value: Any) -> Any:
+        """按字段类型转换 YAML 值，并拒绝未知字段或布尔冒充整数。"""
         if name in {
             "web_port", "poll_interval_seconds", "heartbeat_interval_seconds", "lookback_hours", "page_size",
             "work_order_retention_days", "work_order_event_retention_days", "sync_run_retention_days",
@@ -243,6 +276,7 @@ class ConfigStore:
 
     @staticmethod
     def _validate_field(name: str, value: Any) -> None:
+        """校验单个已转换字段的范围和外部文件存在性。"""
         if name == "base_url":
             parsed = urlparse(value)
             if parsed.scheme != "https" or not parsed.netloc:
@@ -269,6 +303,7 @@ class ConfigStore:
             raise ValueError("指定的 CA 文件不存在")
 
     def _parse_source(self, path: Path) -> dict[str, Any]:
+        """读取 YAML 顶层对象并转换解析错误为带路径的 ``ValueError``。"""
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
             if raw is None:
@@ -280,6 +315,8 @@ class ConfigStore:
             raise ValueError(f"配置文件解析失败: {path}: {type(exc).__name__}") from exc
 
     def _apply_source(self, values: dict[str, Any], raw: dict[str, Any], allowed_keys: set[str]) -> None:
+        """将原始字段转换、校验后写入配置值；兼容旧的单关键词字段名。"""
+        # 旧配置只允许一个关键词，读取时转换为新列表字段以保持兼容。
         if "target_title_keywords" not in raw and "target_title_keyword" in raw:
             raw = dict(raw)
             raw["target_title_keywords"] = (raw["target_title_keyword"],)
@@ -295,6 +332,7 @@ class ConfigStore:
             values[key] = candidate
 
     def load(self) -> AppConfig:
+        """加载完整 YAML 配置；文件不存在、为空、缺字段或有未知字段均报错。"""
         allowed_keys = {field.name for field in fields(AppConfig)}
         if not self.paths.yaml.exists():
             raise FileNotFoundError(f"必须提供配置文件: {self.paths.yaml}")
@@ -314,10 +352,16 @@ class ConfigStore:
         return config
 
     def save(self, config: AppConfig) -> None:
+        """原子保存配置并尽量保留既有 YAML 格式和文件权限。
+
+        先写同目录临时文件并 ``fsync``，再用 ``os.replace`` 替换目标；失败时
+        清理临时文件并抛出带绝对路径的 ``OSError``，避免破坏原配置。
+        """
         target = self.paths.yaml
         payload = config_to_dict(config)
         document: Any
         if target.exists():
+            # round-trip 解析失败时退回空文档，但仍以完整配置覆盖受支持字段。
             try:
                 roundtrip_yaml = YAML(typ="rt")
                 roundtrip_yaml.preserve_quotes = True
@@ -397,21 +441,24 @@ _COOKIE_HEADER_RE = re.compile(r"(?i)(\b(?:Cookie|Set-Cookie):\s*)([^\r\n]+)")
 
 
 def _redact_quoted(match: re.Match[str]) -> str:
+    """将带引号敏感值替换为固定占位符。"""
     return f"{match.group('prefix')}{match.group('quote')}[REDACTED]{match.group('quote')}"
 
 
 def _redact_cookie_header(match: re.Match[str]) -> str:
+    """递归脱敏 Cookie/Set-Cookie 头的值部分。"""
     header, value = match.groups()
     return header + redact_sensitive_data(value)
 
 
 def redact_sensitive_data(text: str) -> str:
-    """Redact credential values in log messages, headers, URLs, and tracebacks."""
+    """脱敏日志、请求头、URL 和 traceback 中的凭据值。"""
     if not text:
         return text
     cookie_values: list[str] = []
 
     def hold_cookie(match: re.Match[str]) -> str:
+        """暂存脱敏 Cookie，避免后续通用正则破坏头部结构。"""
         cookie_values.append(_redact_cookie_header(match))
         return f"__REDACTED_COOKIE_{len(cookie_values) - 1}__"
 
@@ -425,6 +472,7 @@ def redact_sensitive_data(text: str) -> str:
 
 
 def configure_logging(paths: AppPaths) -> logging.Logger:
+    """配置文件日志和控制台日志，并为两者安装统一脱敏格式器。"""
     logger = logging.getLogger("grid_monitor")
     logger.setLevel(logging.INFO)
     logger.propagate = False
@@ -433,6 +481,7 @@ def configure_logging(paths: AppPaths) -> logging.Logger:
         handler for handler in logger.handlers
         if isinstance(handler, logging.FileHandler)
     ]
+    # 已经指向同一路径的文件处理器可复用，避免重复写入同一条日志。
     if existing_file_handlers and all(
         Path(handler.baseFilename).resolve() == log_path and handler.stream is not None
         for handler in existing_file_handlers
@@ -443,7 +492,10 @@ def configure_logging(paths: AppPaths) -> logging.Logger:
         handler.close()
 
     class RedactingFormatter(logging.Formatter):
+        """在标准日志格式化后统一执行敏感信息脱敏。"""
+
         def format(self, record: logging.LogRecord) -> str:
+            """格式化日志记录并隐藏凭据内容。"""
             message = super().format(record)
             return redact_sensitive_data(message)
 
@@ -457,6 +509,7 @@ def configure_logging(paths: AppPaths) -> logging.Logger:
 
 
 def config_to_dict(config: AppConfig) -> dict[str, Any]:
+    """将配置转换为可序列化的 YAML 字典，不包含兼容旧字段。"""
     return {
         "base_url": config.base_url,
         "web_host": config.web_host,

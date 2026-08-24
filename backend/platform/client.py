@@ -1,3 +1,11 @@
+"""业务平台 HTTP 客户端。
+
+本模块负责调用流程平台接口，并把不同版本接口返回的 JSON 形状归一化为
+共享模型。所有请求都经过统一的会话失效、HTTP 错误和非 JSON 响应判断；列表
+接口保留服务端分页总数，用于上层决定是否继续翻页。解析时只读取兼容字段，
+原始响应仍保留在模型中，便于排查平台字段差异。
+"""
+
 from __future__ import annotations
 
 import logging
@@ -12,15 +20,24 @@ from shared.models import TodoTask, TodoTaskPage, WorkOrder, WorkOrderPage
 
 
 class PlatformError(RuntimeError):
-    pass
+    """平台请求、响应或数据格式不符合预期时抛出的基础异常。"""
+
 
 
 class PlatformBusinessError(PlatformError):
-    pass
+    """HTTP 成功但平台业务规则拒绝操作时抛出的异常。"""
+
 
 
 class PlatformClient:
+    """封装流程平台接口和跨版本响应字段兼容。"""
+
     def __init__(self, config: AppConfig, session: requests.Session, logger: logging.Logger | None = None) -> None:
+        """绑定配置和认证 Session。
+
+        ``session`` 必须是已完成认证或已恢复 Cookie 的会话；请求超时采用
+        连接 10 秒、读取 45 秒，避免平台卡住时长期占用同步流程。
+        """
         self.config = config
         self.session = session
         self.logger = logger or logging.getLogger(__name__)
@@ -28,15 +45,23 @@ class PlatformClient:
         self.engine_base = f"{config.base_url.rstrip('/')}/pro-wfm-engine-extend-fak"
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        """发送平台请求并统一处理会话、HTTP 状态和 JSON 格式错误。
+
+        参数 ``path`` 按 ``engine_base`` 拼接，额外 ``kwargs`` 原样传给
+        ``requests``。返回解析后的 JSON；网络错误、登录页和非 JSON 页面分别
+        转换为平台异常或 ``SessionExpired``，不会返回半解析结果。
+        """
         try:
             response = self.session.request(method, urljoin(self.engine_base + "/", path.lstrip("/")), timeout=self.timeout, **kwargs)
         except requests.RequestException as exc:
             raise PlatformError("业务接口请求失败") from exc
         content_type = response.headers.get("content-type", "").lower()
+        # 有些网关会用 200 返回登录 HTML，因此状态码和 URL 都必须检查。
         if response.status_code in (401, 403) or "/cas/login" in response.url:
             raise SessionExpired("业务会话已失效")
         if response.status_code >= 400:
             raise PlatformError(f"业务接口返回 HTTP {response.status_code}")
+        # 内容类型异常时再检查页面标记，兼容服务端错误地返回 HTML 登录页。
         if "text/html" in content_type and "json" not in content_type:
             body = str(getattr(response, "text", "")).lower()
             if any(marker in body for marker in ("/cas/login", "j_username", "j_password", 'id="fm1"')):
@@ -48,10 +73,18 @@ class PlatformClient:
             raise PlatformError("业务接口返回格式无效") from exc
 
     def find_process(self) -> dict[str, Any]:
+        """在流程树中查找标题和业务 key 同时匹配的目标流程。
+
+        平台可能把树嵌套在任意字典/列表字段中，因此递归遍历所有容器。
+        返回第一个匹配节点；没有匹配时抛出 ``PlatformError``。
+        """
         data = self._request("GET", "/manage/category/tree?createOrder=false&includeDefinition=false")
         matches: list[dict[str, Any]] = []
 
         def walk(value: Any) -> None:
+            """递归遍历平台返回的任意字典/列表节点。"""
+            """递归遍历平台返回的任意字典/列表节点。"""
+            """递归遍历平台返回的任意字典/列表节点。"""
             if isinstance(value, dict):
                 title = str(value.get("title", value.get("name", "")))
                 key = str(value.get("key", value.get("id", "")))
@@ -64,11 +97,13 @@ class PlatformClient:
                     walk(child)
 
         walk(data)
+        # 必须同时匹配标题和 key，避免同名流程误同步。
         if not matches:
             raise PlatformError(f"未找到目标流程: {self.config.target_process_title}")
         return matches[0]
 
     def load_process_metadata(self) -> dict[str, Any]:
+        """读取目标流程定义及用户节点元数据，返回两个原始 JSON 对象。"""
         definition = self._request("GET", f"/bpmn/repository/process-definition?key={self.config.target_process_key}")
         nodes = self._request("GET", f"/bpmn/repository/node/process-definition?procDefKey={self.config.target_process_key}&isOnlyUserNode=true")
         return {"definition": definition, "nodes": nodes}
@@ -82,6 +117,12 @@ class PlatformClient:
         end_time: str,
         status: int = 0,
     ) -> WorkOrderPage:
+        """按用户、时间窗口和状态分页查询工单。
+
+        ``page_index``/``page_size`` 原样传给平台；返回值中的 ``total`` 用于
+        判断是否还有下一页。接口字段在 ``objects``/``data`` 之间兼容，无法
+        解析的总数回退为当前页条数，单条非字典数据则跳过。
+        """
         if not user_id:
             raise ValueError("缺少当前用户")
         payload = {
@@ -96,6 +137,7 @@ class PlatformClient:
         data = self._request("POST", "/bpmn/runtime/task/work-order/all", json=payload)
         if not isinstance(data, dict):
             raise PlatformError("工单响应格式无效")
+        # 不同平台版本使用 objects 或 data，且 data 还可能再包一层列表。
         rows = data.get("objects", data.get("data", []))
         if isinstance(rows, dict):
             rows = rows.get("objects", rows.get("list", []))
@@ -117,6 +159,11 @@ class PlatformClient:
         page_index: int = 1,
         page_size: int = 50,
     ) -> TodoTaskPage:
+        """查询当前账号的待办任务分页。
+
+        ``assigned`` 控制是否只看已领取任务；页码和页大小必须为正数。响应
+        允许顶层或嵌套 ``data``/``list`` 结构，返回的总数供调用方继续翻页。
+        """
         if not login_id:
             raise ValueError("缺少当前用户")
         if page_index < 1 or page_size < 1:
@@ -134,6 +181,7 @@ class PlatformClient:
         )
         if not isinstance(data, dict):
             raise PlatformError("待领取任务响应格式无效")
+        # 待办接口的列表包装层在不同部署版本中不固定。
         rows = data.get("data", [])
         if isinstance(rows, dict):
             rows = rows.get("data", rows.get("list", []))
@@ -149,10 +197,14 @@ class PlatformClient:
 
     @staticmethod
     def _parse_todo_task(row: dict[str, Any]) -> TodoTask:
+        """把平台待办记录映射为共享模型，并保留原始记录。"""
         common = row.get("woCommon")
         common = common if isinstance(common, dict) else {}
 
         def text(*keys: str, source: dict[str, Any] | None = None) -> str:
+            """按字段别名读取文本，缺失值统一为空字符串。"""
+            """按字段别名读取文本，缺失值统一为空字符串。"""
+            """按字段别名读取文本，缺失值统一为空字符串。"""
             values = source if source is not None else row
             for key in keys:
                 value = values.get(key)
@@ -175,6 +227,11 @@ class PlatformClient:
         )
 
     def assign_tasks(self, assignee: str, task_ids: list[str]) -> dict[str, Any]:
+        """批量领取任务并返回平台原始响应。
+
+        领取人和任务 ID 列表必须非空且每个 ID 为非空字符串；HTTP 成功不代表
+        业务成功，``stat`` 不是 ``1`` 时抛出 ``PlatformBusinessError``。
+        """
         if not assignee:
             raise ValueError("缺少领取人")
         if not isinstance(task_ids, list) or not task_ids or any(not isinstance(task_id, str) or not task_id.strip() for task_id in task_ids):
@@ -183,6 +240,7 @@ class PlatformClient:
         data = self._request("POST", "/bpmn/task/assignee/batch", json=payload)
         if not isinstance(data, dict):
             raise PlatformError("领取响应格式无效")
+        # 平台以业务字段表示成功，不能仅依据 HTTP 200 判定领取完成。
         if str(data.get("stat", "")) != "1":
             message = str(data.get("message") or "平台拒绝了领取请求")
             raise PlatformBusinessError(message)
@@ -190,7 +248,11 @@ class PlatformClient:
 
     @staticmethod
     def _parse_work_order(row: dict[str, Any]) -> WorkOrder:
+        """兼容平台工单字段别名并构造共享 ``WorkOrder``。"""
         def text(*keys: str) -> str:
+            """按字段别名读取当前工单字段。"""
+            """按字段别名读取当前工单字段。"""
+            """按字段别名读取当前工单字段。"""
             for key in keys:
                 value = row.get(key)
                 if value is not None:
@@ -213,6 +275,7 @@ class PlatformClient:
         )
 
     def get_detail(self, order_id: str) -> dict[str, Any]:
+        """按工单 ID 获取详情原始 JSON；空 ID 直接拒绝。"""
         if not order_id:
             raise ValueError("工单 ID 不能为空")
         return self._request("GET", f"/bpmn/runtime/task/work-order/info/{order_id}")

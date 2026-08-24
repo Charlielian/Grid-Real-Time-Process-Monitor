@@ -1,3 +1,9 @@
+"""同步编排和异步任务生命周期回归测试。
+
+测试使用 fake 平台客户端与临时数据库，不依赖外部网络；事件对象用于确定性地
+验证翻页取消、批量 upsert、任务去重、状态终态和关闭 deadline。
+"""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
