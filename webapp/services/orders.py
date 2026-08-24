@@ -8,11 +8,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import logging
 from typing import Any
 
 from backend.platform.client import PlatformClient
 from shared.config import AppConfig
 from shared.models import WorkOrder
+
+_logger = logging.getLogger(__name__)
 
 # 平台没有办结状态的统一枚举，这里按已知取值归一化判断。
 _COMPLETED_STATUSES = ("completed", "done", "已办结", "办结", "finish", "finished")
@@ -84,8 +87,13 @@ def fetch_work_orders(
         )
         count = len(page.items)
         if count == 0:
+            _logger.info("工单分页结束: page_index=%d total=%d collected=%d", page_index, page.total, len(collected))
             break
         effective_page_size = max(effective_page_size, count)
+        _logger.info(
+            "工单分页: page_index=%d page_size=%d effective=%d total=%d count=%d collected=%d",
+            page_index, config.page_size, effective_page_size, page.total, count, len(collected),
+        )
         collected.extend(
             order for order in page.items
             if _matches(order, keyword=keyword, status=status, node=node, cities=cities)

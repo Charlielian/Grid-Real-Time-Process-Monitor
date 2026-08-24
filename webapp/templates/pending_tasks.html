@@ -6,7 +6,7 @@
   <div class="page-header">
     <div>
       <h1>待领取任务</h1>
-      <span class="muted">地市按标题匹配；不选择地市时显示全部任务；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
+      <span class="muted">地市按标题匹配；不选择地市时显示全部任务；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}{% if auto_claim_pending_tasks %}（自动领取仅领取标题含“{{ claim_keywords[0] }}”的任务）{% endif %}</span>
     </div>
     <button type="button" class="button" id="pending-refresh">刷新</button>
   </div>

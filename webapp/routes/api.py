@@ -91,8 +91,13 @@ def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config:
         )
         count = len(result.items)
         if count == 0:
+            _logger().info("待领取分页结束: page_index=%d total=%d collected=%d", page_index, result.total, len(tasks))
             break
         effective_page_size = max(effective_page_size, count)
+        _logger().info(
+            "待领取分页: page_index=%d page_size=%d effective=%d total=%d count=%d collected=%d",
+            page_index, page_size, effective_page_size, result.total, count, len(tasks),
+        )
         tasks.extend(
             task for task in result.items
             if not cities or any(city in task.title for city in cities)
@@ -155,7 +160,10 @@ def claim_pending_tasks():
         client = current_app.extensions["web_auth"].platform(request.web_auth_context)
         config = current_app.extensions["app_config"]
         pending = _query_all_todo_tasks(client, login_id, assigned=False, config=config)
-        pending_by_id = {task.task_id: task for task in pending}
+        # 自动领取只认配置的目标关键词（默认阳江）：标题匹配任一关键词才允许领取。
+        keywords = config.target_title_keywords
+        claimable = [task for task in pending if any(kw in task.title for kw in keywords)]
+        pending_by_id = {task.task_id: task for task in claimable}
         missing = [task_id for task_id in task_ids if task_id not in pending_by_id]
         if missing:
             return jsonify({"error": "task_unavailable", "message": "部分任务已被领取或不可领取", "task_ids": missing}), 409
