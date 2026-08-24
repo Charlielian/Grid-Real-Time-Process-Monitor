@@ -7,6 +7,7 @@
 (() => {
   const image = document.querySelector('#captcha-image');
   const message = document.querySelector('#message');
+  const form = document.querySelector('#login-form');
   const csrf = () => form.querySelector('[name=csrf_token]').value;
   const setMessage = (text, error = false) => { message.textContent = text; message.className = error ? 'flash error' : 'muted'; };
   const postJson = async (url, body = undefined) => GridApi.request(url, {
