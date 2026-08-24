@@ -73,6 +73,7 @@ def fetch_work_orders(
     end_time = end_time or _window(config)[1]
     collected: list[WorkOrder] = []
     page_index = 1
+    effective_page_size = 0  # actual max items per page from the platform
     while True:
         page = client.query_work_orders(
             login_id,
@@ -81,11 +82,15 @@ def fetch_work_orders(
             start_time=start_time,
             end_time=end_time,
         )
+        count = len(page.items)
+        if count == 0:
+            break
+        effective_page_size = max(effective_page_size, count)
         collected.extend(
             order for order in page.items
             if _matches(order, keyword=keyword, status=status, node=node, cities=cities)
         )
-        if not page.items or len(page.items) < max(1, page.page_size) or page_index * page.page_size >= page.total:
+        if page_index * effective_page_size >= page.total:
             break
         page_index += 1
     return collected

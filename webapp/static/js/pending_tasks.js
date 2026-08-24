@@ -6,6 +6,7 @@
  * 到 HTML；页面隐藏时取消请求，恢复可见后再补偿加载当前 URL 的筛选结果。
  */
 (() => {
+  const page = document.querySelector('.pending-page');
   const rows = document.querySelector('#pending-rows');
   const message = document.querySelector('#pending-message');
   const refresh = document.querySelector('#pending-refresh');

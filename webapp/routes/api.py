@@ -81,20 +81,23 @@ def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config:
     page_index = 1
     page_size = 100
     tasks: list[TodoTask] = []
-    seen_pages: set[int] = set()
-    while page_index not in seen_pages:
-        seen_pages.add(page_index)
+    effective_page_size = 0
+    while True:
         result = client.query_todo_tasks(
             login_id,
             assigned=assigned,
             page_index=page_index,
             page_size=page_size,
         )
+        count = len(result.items)
+        if count == 0:
+            break
+        effective_page_size = max(effective_page_size, count)
         tasks.extend(
             task for task in result.items
             if not cities or any(city in task.title for city in cities)
         )
-        if not result.items or len(result.items) < max(1, result.page_size):
+        if page_index * effective_page_size >= result.total:
             break
         page_index += 1
     return tasks
