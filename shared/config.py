@@ -114,13 +114,6 @@ class AppConfig:
     target_process_key: str = DEFAULT_TARGET_PROCESS_KEY
     target_title_keywords: tuple[str, ...] = DEFAULT_TARGET_TITLE_KEYWORDS
     auto_claim_pending_tasks: bool = False
-    work_order_retention_days: int = 90
-    work_order_event_retention_days: int = 180
-    sync_run_retention_days: int = 90
-    database_cleanup_interval_seconds: int = 3600
-    database_cleanup_batch_size: int = 500
-    database_max_size_mb: int = 1024
-    wal_max_size_mb: int = 256
 
     def __post_init__(self) -> None:
         """规范化并校验配置，确保网络、轮询、分页和维护参数可安全使用。"""
@@ -153,24 +146,6 @@ class AppConfig:
             raise ValueError("target_title_keywords 必须是非空字符串列表")
         if not isinstance(self.auto_claim_pending_tasks, bool):
             raise ValueError("auto_claim_pending_tasks 必须是布尔值")
-        retention_fields = (
-            self.work_order_retention_days,
-            self.work_order_event_retention_days,
-            self.sync_run_retention_days,
-        )
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in retention_fields):
-            raise ValueError("保留周期必须是大于等于 0 的整数")
-        maintenance_integer_fields = (
-            ("database_cleanup_interval_seconds", self.database_cleanup_interval_seconds, 60, 86400),
-            ("database_cleanup_batch_size", self.database_cleanup_batch_size, 1, 10000),
-            ("database_max_size_mb", self.database_max_size_mb, 0, None),
-            ("wal_max_size_mb", self.wal_max_size_mb, 0, None),
-        )
-        for name, value, minimum, maximum in maintenance_integer_fields:
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"{name} 必须是整数")
-            if value < minimum or (maximum is not None and value > maximum):
-                raise ValueError(f"{name} 超出允许范围")
 
         # 指定 CA 文件必须在启动时存在，否则请求会在运行中才失败。
         if self.ca_bundle and not Path(self.ca_bundle).is_file():
@@ -201,7 +176,6 @@ class AppPaths:
         self.config_path = self._config_path()
         # Compatibility alias retained for callers and tests.
         self.yaml = self.config_path
-        self.database = self.root / "monitor.sqlite3"
         self.log = self.root / "app.log"
 
     @classmethod
@@ -247,9 +221,7 @@ class ConfigStore:
         """按字段类型转换 YAML 值，并拒绝未知字段或布尔冒充整数。"""
         if name in {
             "web_port", "poll_interval_seconds", "heartbeat_interval_seconds", "lookback_hours", "page_size",
-            "work_order_retention_days", "work_order_event_retention_days", "sync_run_retention_days",
-            "database_cleanup_interval_seconds", "database_cleanup_batch_size", "database_max_size_mb", "wal_max_size_mb",
-        }:
+            }:
             if isinstance(value, bool):
                 raise ValueError("必须是整数")
             try:
@@ -291,14 +263,6 @@ class ConfigStore:
             raise ValueError("超出允许范围[1,720]")
         elif name == "page_size" and not 10 <= value <= 500:
             raise ValueError("超出允许范围[10,500]")
-        elif name in {"work_order_retention_days", "work_order_event_retention_days", "sync_run_retention_days"} and value < 0:
-            raise ValueError("必须大于等于 0")
-        elif name == "database_cleanup_interval_seconds" and not 60 <= value <= 86400:
-            raise ValueError("超出允许范围[60,86400]")
-        elif name == "database_cleanup_batch_size" and not 1 <= value <= 10000:
-            raise ValueError("超出允许范围[1,10000]")
-        elif name in {"database_max_size_mb", "wal_max_size_mb"} and value < 0:
-            raise ValueError("必须大于等于 0")
         elif name == "ca_bundle" and value and not Path(value).is_file():
             raise ValueError("指定的 CA 文件不存在")
 
@@ -523,11 +487,4 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
         "target_process_title": config.target_process_title,
         "target_process_key": config.target_process_key,
         "auto_claim_pending_tasks": config.auto_claim_pending_tasks,
-        "work_order_retention_days": config.work_order_retention_days,
-        "work_order_event_retention_days": config.work_order_event_retention_days,
-        "sync_run_retention_days": config.sync_run_retention_days,
-        "database_cleanup_interval_seconds": config.database_cleanup_interval_seconds,
-        "database_cleanup_batch_size": config.database_cleanup_batch_size,
-        "database_max_size_mb": config.database_max_size_mb,
-        "wal_max_size_mb": config.wal_max_size_mb,
     }

@@ -1,8 +1,9 @@
-"""Web 会话上下文、持久化 Cookie 和会话注册表服务。
+"""Web 会话上下文、持久化 Cookie、账号索引和会话注册表服务。
 
 浏览器 session 只保存短标识，实际平台客户端和 Cookie 存在进程内注册表中。
 注册表使用锁保护并发访问；关闭或失效时清理回调与资源，避免多个请求共享
-已被释放的会话对象。
+已被释放的会话对象。已保存账号的元数据（显示名、最近使用和心跳状态）放在
+系统 keyring 的固定条目里，随 Cookie 一起跨进程保留。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import logging
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +36,128 @@ class PersistentCookieStore(CookieStore):
     def __init__(self, config: AppConfig, logger: Any) -> None:
         origin_key = hashlib.sha256(config.origin.encode("utf-8")).hexdigest()[:20]
         super().__init__(f"{self.service_prefix}-{origin_key}", logger)
+
+
+class AccountIndexStore:
+    """Persist saved-account metadata in the OS keyring as a single JSON list.
+
+    Only metadata lives here; session cookies are stored per-login_id by
+    ``CookieStore`` under the same keyring service. Keyring failures degrade to
+    empty reads and no-op writes, never crashing the login flow.
+    """
+
+    service_prefix = "grid-realtime-monitor-web"
+    username = "index"
+    field_order = (
+        "login_id", "display_name", "last_used_at", "last_heartbeat_at",
+        "heartbeat_status", "consecutive_failures", "last_error",
+    )
+
+    def __init__(self, config: AppConfig, logger: Any) -> None:
+        origin_key = hashlib.sha256(config.origin.encode("utf-8")).hexdigest()[:20]
+        self.service_name = f"{self.service_prefix}-{origin_key}"
+        self.logger = logger or logging.getLogger(__name__)
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _read(self) -> list[dict[str, Any]]:
+        """读取账号索引列表；密钥环或 JSON 异常时退回空列表。"""
+        try:
+            raw = keyring.get_password(self.service_name, self.username)
+        except Exception as exc:
+            self.logger.warning("读取保存账号索引失败: %s", type(exc).__name__)
+            return []
+        if not raw:
+            return []
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self.logger.warning("保存账号索引格式无效")
+            return []
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    def _write(self, records: list[dict[str, Any]]) -> bool:
+        """覆写账号索引；密钥环异常时只记录类型并返回失败。"""
+        try:
+            keyring.set_password(
+                self.service_name,
+                self.username,
+                json.dumps(records, ensure_ascii=False, separators=(",", ":")),
+            )
+            return True
+        except Exception as exc:
+            self.logger.warning("保存账号索引失败: %s", type(exc).__name__)
+            return False
+
+    @staticmethod
+    def _normalize(record: dict[str, Any]) -> dict[str, Any]:
+        """补齐缺失字段并保持固定字段顺序，便于前端与心跳读写。"""
+        normalized = {field_name: record.get(field_name) for field_name in AccountIndexStore.field_order}
+        return normalized
+
+    def upsert(self, login_id: str, display_name: str = "") -> None:
+        """记录一次登录/恢复；已存在的账号只更新显示名和最近使用时间。"""
+        if not login_id:
+            return
+        records = self._read()
+        now = self._now()
+        for record in records:
+            if record.get("login_id") == login_id:
+                record["display_name"] = display_name
+                record["last_used_at"] = now
+                self._write(records)
+                return
+        records.append(self._normalize({
+            "login_id": login_id,
+            "display_name": display_name,
+            "last_used_at": now,
+            "last_heartbeat_at": None,
+            "heartbeat_status": "unknown",
+            "consecutive_failures": 0,
+            "last_error": None,
+        }))
+        self._write(records)
+
+    def get(self, login_id: str) -> dict[str, Any] | None:
+        """按账号返回完整索引记录；不存在或索引损坏返回 ``None``。"""
+        for record in self._read():
+            if record.get("login_id") == login_id:
+                return self._normalize(record)
+        return None
+
+    def list(self) -> list[dict[str, Any]]:
+        """按最近使用时间倒序返回全部账号索引记录。"""
+        records = [self._normalize(record) for record in self._read()]
+        return sorted(records, key=lambda record: str(record.get("last_used_at") or ""), reverse=True)
+
+    def remove(self, login_id: str) -> None:
+        """从索引中移除账号；不存在的账号保持幂等。"""
+        records = self._read()
+        remaining = [record for record in records if record.get("login_id") != login_id]
+        if len(remaining) != len(records):
+            self._write(remaining)
+
+    def has(self, login_id: str) -> bool:
+        """判断账号是否存在于索引中。"""
+        return self.get(login_id) is not None
+
+    def update_heartbeat(
+        self, login_id: str, *, status: str, heartbeat_at: str, error: str | None, consecutive_failures: int
+    ) -> None:
+        """写入一次心跳结果；账号不在索引中时忽略。"""
+        records = self._read()
+        for record in records:
+            if record.get("login_id") == login_id:
+                record["last_heartbeat_at"] = heartbeat_at
+                record["heartbeat_status"] = status
+                record["consecutive_failures"] = consecutive_failures
+                record["last_error"] = error
+                self._write(records)
+                return
 
 
 @dataclass
@@ -72,7 +196,6 @@ class SessionRegistry:
         self.ttl_seconds = ttl_seconds
         self._contexts: dict[str, WebAuthContext] = {}
         self._lock = threading.RLock()
-        self._remove_callback: Any | None = None
         self._closed = False
         self._cleanup_stop = threading.Event()
         interval = cleanup_interval_seconds or min(max(ttl_seconds / 2, 1), 60)
@@ -84,22 +207,11 @@ class SessionRegistry:
         )
         self._cleanup_thread.start()
 
-    def set_remove_callback(self, callback: Any | None) -> None:
-        self._remove_callback = callback
-
     def _cleanup_loop(self, interval: float) -> None:
         while not self._cleanup_stop.wait(interval):
             self.cleanup()
 
     def _dispose(self, context: WebAuthContext, *, timeout: float | None = None) -> None:
-        callback = self._remove_callback
-        if callback is not None:
-            try:
-                callback(context.context_id, timeout=timeout)
-            except TypeError:
-                callback(context.context_id)
-            except Exception:
-                self.logger.exception("清理会话关联同步任务失败: context_id=%s", context.context_id)
         context.user = None
         context.captcha_page = None
         context.captcha_verified = False
@@ -179,15 +291,16 @@ class SessionRegistry:
 
 
 class WebAuthService:
-    def __init__(self, registry: SessionRegistry, logger: Any, database: Any | None = None) -> None:
+    def __init__(self, registry: SessionRegistry, logger: Any) -> None:
         self.registry = registry
         self.logger = logger
-        self.database = database
         self.cookies = PersistentCookieStore(registry.config, logger)
+        self.accounts = AccountIndexStore(registry.config, logger)
 
     def update_config(self, config: AppConfig) -> None:
         self.registry.config = config
         self.cookies = PersistentCookieStore(config, self.logger)
+        self.accounts = AccountIndexStore(config, self.logger)
 
     def context(self, context_id: str | None) -> WebAuthContext:
         context = self.registry.get(context_id)
@@ -221,19 +334,15 @@ class WebAuthService:
         except requests.RequestException:
             self.logger.warning("恢复登录会话时进入业务门户网络暂不可用")
         context.touch()
-        if self.database is not None:
-            self.database.upsert_saved_account(user.login_id, user.display_name)
+        self.accounts.upsert(user.login_id, user.display_name)
         return user
 
-    def list_saved_accounts(self) -> list[Any]:
-        if self.database is None:
-            return []
-        return self.database.list_saved_accounts()
+    def list_saved_accounts(self) -> list[dict[str, Any]]:
+        return self.accounts.list()
 
     def remove_saved_account(self, login_id: str) -> None:
         self.cookies.clear(login_id)
-        if self.database is not None:
-            self.database.remove_saved_account(login_id)
+        self.accounts.remove(login_id)
 
     def captcha(self, context: WebAuthContext) -> bytes:
         client = CasClient(self.registry.config, context.session, self.logger)
@@ -292,8 +401,8 @@ class WebAuthService:
         context.touch()
         if not self.cookies.save(user.login_id, context.session):
             self.logger.warning("登录成功但保存会话失败: %s", user.login_id)
-        elif self.database is not None:
-            self.database.upsert_saved_account(user.login_id, user.display_name)
+        else:
+            self.accounts.upsert(user.login_id, user.display_name)
         return user
 
     def require_user(self, context_id: str | None) -> tuple[WebAuthContext, UserInfo]:

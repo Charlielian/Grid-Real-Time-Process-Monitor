@@ -15,9 +15,8 @@ from typing import Any
 import requests
 
 from backend.auth.cas_client import AuthError, CasClient, SessionExpired, SessionFactory
-from backend.storage.database import Database
 from shared.config import AppConfig
-from webapp.services.auth import PersistentCookieStore
+from webapp.services.auth import AccountIndexStore, PersistentCookieStore
 
 
 class SessionMonitor:
@@ -25,17 +24,16 @@ class SessionMonitor:
 
     def __init__(
         self,
-        database: Database,
         config: AppConfig,
         logger: logging.Logger | None = None,
         *,
         interval_seconds: int | None = None,
     ) -> None:
-        self.database = database
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
         self.interval_seconds = interval_seconds or config.heartbeat_interval_seconds
         self.cookies = PersistentCookieStore(config, self.logger)
+        self.accounts = AccountIndexStore(config, self.logger)
         self._stop = threading.Event()
         self._lock = threading.RLock()
         self._account_locks: dict[str, threading.Lock] = {}
@@ -54,6 +52,7 @@ class SessionMonitor:
                 self.config = config
                 self.interval_seconds = config.heartbeat_interval_seconds
                 self.cookies = PersistentCookieStore(config, self.logger)
+                self.accounts = AccountIndexStore(config, self.logger)
                 sessions = list(self._sessions.values())
                 self._sessions.clear()
             for session in sessions:
@@ -81,7 +80,7 @@ class SessionMonitor:
         return datetime.now(timezone.utc).isoformat()
 
     def _update(self, login_id: str, *, status: str, error: str | None, failures: int) -> None:
-        self.database.update_heartbeat(
+        self.accounts.update_heartbeat(
             login_id,
             status=status,
             heartbeat_at=self._now(),
@@ -90,25 +89,25 @@ class SessionMonitor:
         )
 
     def check_now(self, login_id: str) -> dict[str, Any] | None:
-        """Validate one saved account and return its redacted database record."""
+        """Validate one saved account and return its redacted account record."""
         if not login_id:
             return None
         with self._lock:
             if self._closed or self._stop.is_set():
                 return None
-        account = self.database.get_saved_account(login_id)
+        account = self.accounts.get(login_id)
         if account is None:
             return None
         lock = self._lock_for(login_id)
         with lock:
-            current = self.database.get_saved_account(login_id)
+            current = self.accounts.get(login_id)
             if current is None:
                 return None
             failures = int(current["consecutive_failures"] or 0)
             session = self._session_for(login_id)
             if not self.cookies.load(login_id, session):
                 self._update(login_id, status="expired", error="没有可用的保存会话", failures=failures + 1)
-                return dict(self.database.get_saved_account(login_id))
+                return dict(self.accounts.get(login_id))
             try:
                 CasClient(self.config, session, self.logger).check_session(expected_login_id=login_id)
                 # CAS may rotate a service cookie in Set-Cookie; persist only the cookie jar.
@@ -124,11 +123,11 @@ class SessionMonitor:
                 self._update(login_id, status="error", error="会话检查暂时失败", failures=failures + 1)
             else:
                 self._update(login_id, status="healthy", error=None, failures=0)
-            return dict(self.database.get_saved_account(login_id))
+            return dict(self.accounts.get(login_id))
 
     def _run_cycle(self) -> None:
         try:
-            accounts = self.database.list_saved_accounts()
+            accounts = self.accounts.list()
         except Exception:
             self.logger.exception("读取保存账号失败")
             return

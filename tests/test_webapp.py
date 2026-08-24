@@ -153,7 +153,6 @@ def test_web_pages_and_unauthorized_api(app) -> None:
         "user": None,
     }
     assert client.get("/api/v1/orders").status_code == 401
-    assert client.get("/dashboard").status_code == 302
 
 
 def test_csrf_token_is_required_for_post(app) -> None:
@@ -171,33 +170,26 @@ def test_csrf_token_is_required_for_post(app) -> None:
 
 
 def test_title_scope_and_scroll_layout(app) -> None:
-    from shared.models import WorkOrder
-    database = app.extensions["database"]
-    database.upsert_work_order(WorkOrder(order_id="target", title="阳江目标工单", raw={}))
-    database.upsert_work_order(WorkOrder(order_id="other", title="【广州】其他工单", raw={}))
-    with app.test_request_context():
-        from flask import session
-        session["auth_context_id"] = "not-authenticated"
     template = (app.root_path + "/templates/orders.html")
     css = (app.root_path + "/static/css/app.css")
     assert "orders-table" in open(template, encoding="utf-8").read()
     template_text = open(template, encoding="utf-8").read()
     assert "data-poll-interval" in template_text
-    assert "new-orders-bubble" in template_text
     assert 'id="orders-rows"' in template_text
     assert 'id="orders-total"' in template_text
     login_template = open(app.root_path + "/templates/login.html", encoding="utf-8").read()
     assert "使用已保存 Cookies 登录" in login_template
     orders_js = open(app.root_path + "/static/js/orders.js", encoding="utf-8").read()
-    assert "summary?.added" in orders_js
-    assert "window.location.reload" in orders_js
+    assert "orders-refresh-status" in orders_js
     assert "/api/v1/orders" in orders_js
     assert "window.location.search" in orders_js
     assert "replaceChildren" in orders_js
+    addressable_template = open(app.root_path + "/templates/order_detail.html", encoding="utf-8").read()
+    assert "历史变化" not in addressable_template
+    assert "工单详情" in addressable_template
     css_text = open(css, encoding="utf-8").read()
     assert "overflow: auto" in css_text
     assert "position: fixed" in css_text
-    assert "new-orders-bubble" in css_text
     macros = open(app.root_path + "/templates/_macros.html", encoding="utf-8").read()
     city_picker_js = open(app.root_path + "/static/js/city_picker.js", encoding="utf-8").read()
     assert "data-city-picker" in macros
@@ -224,7 +216,7 @@ def test_frontend_uses_shared_api_and_handles_failures(app) -> None:
     assert "2 ** attempt" in api
     assert "Retry-After" in api
     assert "Accept" in api
-    for name in ("login.js", "dashboard.js", "orders.js", "pending_tasks.js", "city_picker.js"):
+    for name in ("login.js", "orders.js", "pending_tasks.js", "city_picker.js"):
         assert "fetch(" not in open(static + name, encoding="utf-8").read()
     base = open(app.root_path + "/templates/base.html", encoding="utf-8").read()
     assert "js/api.js" in base
@@ -250,22 +242,3 @@ def test_pending_api_requires_auth_and_csrf(app) -> None:
         browser_session["auth_context_id"] = "unknown"
         browser_session["csrf_token"] = "expected"
     assert client.post("/api/v1/pending-tasks/claim", json={"task_ids": ["task-1"]}).status_code == 401
-
-
-def test_database_api_returns_explicit_fields_only(app) -> None:
-    from shared.models import WorkOrder
-    database = app.extensions["database"]
-    database.upsert_work_order(WorkOrder(
-        order_id="order-1",
-        number="WO-1",
-        title="脱敏工单",
-        status="处理中",
-        current_node="节点A",
-        assignee="用户A",
-        created_at="2026-08-20T10:00:00+00:00",
-        raw={"internal": "must-not-be-exposed"},
-    ))
-    with app.test_request_context():
-        from flask import session
-        session["auth_context_id"] = "not-authenticated"
-    assert database.get_work_order("order-1")["order_id"] == "order-1"

@@ -1,17 +1,20 @@
 """HTML 页面路由。
 
-页面路由负责把认证上下文、配置和数据库查询结果组合成模板上下文。工单页
-将重复 city 参数和日期范围交给共享解析器，再把规范化值回填页面，确保分页
-链接和 JavaScript 局部刷新继续使用同一组筛选条件。
+页面路由负责把认证上下文、配置和实时平台查询结果组合成模板上下文。工单页
+将重复 city 参数和日期范围交给共享解析器，再把规范化值回填页面；工单列表与
+详情每次都实时查询上游，本地不保留快照。
 """
 
 from __future__ import annotations
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
+from backend.auth.cas_client import SessionExpired
+from backend.platform.client import PlatformError
 from shared.config import GUANGDONG_CITIES, normalize_cities, with_config_updates
 from shared.filters import parse_order_filters
 from webapp.routes.decorators import check_csrf, web_login_required
+from webapp.services.orders import fetch_work_orders
 
 bp = Blueprint("web", __name__)
 
@@ -28,7 +31,7 @@ def login() -> str:
     if context_id:
         try:
             current_app.extensions["web_auth"].require_user(context_id)
-            return redirect(url_for("web.dashboard"))
+            return redirect(url_for("web.orders"))
         except Exception:
             current_app.extensions["session_registry"].remove(context_id)
             session.pop("auth_context_id", None)
@@ -40,15 +43,6 @@ def login() -> str:
         saved_session_available=saved_session_available,
         saved_accounts=saved_accounts,
     )
-
-
-@bp.get("/dashboard")
-@web_login_required
-def dashboard() -> str:
-    from flask import current_app
-    stats = current_app.extensions["database"].dashboard_stats()
-    latest = current_app.extensions["database"].latest_sync_run()
-    return render_template("dashboard.html", stats=stats, latest_sync=latest)
 
 
 @bp.get("/pending-tasks")
@@ -75,29 +69,41 @@ def pending_tasks() -> str:
 def orders() -> str:
     from flask import current_app
     config = current_app.extensions["app_config"]
-    db = current_app.extensions["database"]
     page = max(1, request.args.get("page", 1, type=int))
     page_size = min(500, max(10, request.args.get("page_size", 50, type=int)))
     try:
         filters = parse_order_filters(request.args)
     except ValueError as exc:
         return render_template("not_found.html", message=str(exc)), 400
-    city_keywords = filters.pop("city")
-    start_date = filters.pop("start_date")
-    end_date = filters.pop("end_date")
-    rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=city_keywords, **filters)
-    total = db.count_work_orders(title_keywords=city_keywords, **filters)
+    try:
+        items = fetch_work_orders(
+            current_app.extensions["web_auth"].platform(request.web_auth_context),
+            request.web_user.login_id,
+            config,
+            keyword=filters["keyword"],
+            status=filters["status"],
+            node=filters["node"],
+            cities=filters["city"],
+            start_time=filters["start_time"],
+            end_time=filters["end_time"],
+        )
+    except SessionExpired:
+        return redirect(url_for("web.login"))
+    except PlatformError:
+        return render_template("not_found.html", message="工单服务暂时不可用，请稍后重试"), 503
+    total = len(items)
     pages = max(1, (total + page_size - 1) // page_size)
+    start = (page - 1) * page_size
     return render_template(
         "orders.html",
-        rows=rows,
+        rows=items[start:start + page_size],
         total=total,
         page=page,
         pages=pages,
         page_size=page_size,
-        filters={**filters, "city": city_keywords, "start_date": start_date, "end_date": end_date},
+        filters={**filters, "city": filters["city"], "start_date": filters["start_date"], "end_date": filters["end_date"]},
         cities=GUANGDONG_CITIES,
-        selected_cities=city_keywords,
+        selected_cities=filters["city"],
         poll_interval_seconds=config.poll_interval_seconds,
         auto_sync=config.auto_sync,
     )
@@ -107,11 +113,16 @@ def orders() -> str:
 @web_login_required
 def order_detail(order_id: str) -> str:
     from flask import current_app
-    db = current_app.extensions["database"]
-    row = db.get_work_order(order_id)
-    if row is None:
+    import requests
+    try:
+        detail = current_app.extensions["web_auth"].platform(request.web_auth_context).get_detail(order_id)
+    except SessionExpired:
+        return redirect(url_for("web.login"))
+    except (PlatformError, requests.RequestException):
+        return render_template("not_found.html", message="工单详情暂时不可用"), 503
+    if not isinstance(detail, dict) or not detail:
         return render_template("not_found.html", message="工单不存在"), 404
-    return render_template("order_detail.html", order=row, events=db.list_events(order_id))
+    return render_template("order_detail.html", order=detail)
 
 
 @bp.route("/settings", methods=["GET", "POST"])

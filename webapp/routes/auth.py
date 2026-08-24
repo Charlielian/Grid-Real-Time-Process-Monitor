@@ -106,7 +106,7 @@ def login_submit():
     session.permanent = True
     session["saved_login_id"] = user.login_id
     current_app.extensions["session_monitor"].check_now(user.login_id)
-    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.dashboard")})
+    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.orders")})
 
 
 @bp.post("/auth/restore")
@@ -116,7 +116,7 @@ def restore_saved_session():
     login_id = data.get("login_id", "").strip() or session.get("saved_login_id")
     if not login_id:
         return jsonify({"ok": False, "message": "没有可恢复的登录会话"}), 404
-    if current_app.extensions["web_auth"].database.get_saved_account(login_id) is None:
+    if current_app.extensions["web_auth"].accounts.get(login_id) is None:
         return jsonify({"ok": False, "message": "未找到该保存账号"}), 404
     auth = current_app.extensions["web_auth"]
     context = _context()
@@ -132,7 +132,7 @@ def restore_saved_session():
         return jsonify({"ok": False, "message": "恢复登录会话失败，请稍后重试"}), 500
     session.permanent = True
     session["saved_login_id"] = user.login_id
-    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.dashboard")})
+    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.orders")})
 
 
 @bp.get("/auth/saved-accounts")
@@ -155,7 +155,7 @@ def saved_accounts():
 @bp.delete("/auth/saved-accounts/<login_id>")
 def delete_saved_account(login_id: str):
     check_csrf()
-    if not login_id or current_app.extensions["web_auth"].database.get_saved_account(login_id) is None:
+    if not login_id or current_app.extensions["web_auth"].accounts.get(login_id) is None:
         return jsonify({"ok": False, "message": "未找到该保存账号"}), 404
     current_app.extensions["web_auth"].remove_saved_account(login_id)
     if session.get("saved_login_id") == login_id:

@@ -22,17 +22,3 @@ target_process_title: 微网格实时优化流程
 target_process_key: proc_wwg_ssyhlc
 # 是否自动领取待领取任务；false 表示只展示并由用户手动领取。
 auto_claim_pending_tasks: false
-# 工单快照保留天数；0 表示永久保留。
-work_order_retention_days: 90
-# 工单事件保留天数；0 表示永久保留。
-work_order_event_retention_days: 180
-# 已完成同步记录保留天数；0 表示永久保留，未完成记录不会清理。
-sync_run_retention_days: 90
-# 数据库维护线程的执行间隔（秒），范围 60-86400。
-database_cleanup_interval_seconds: 3600
-# 每轮数据库清理最多删除的记录数，范围 1-10000。
-database_cleanup_batch_size: 500
-# SQLite 主数据库文件大小告警阈值（MB）；0 表示不告警。
-database_max_size_mb: 1024
-# SQLite WAL 文件大小告警阈值（MB）；0 表示不告警。
-wal_max_size_mb: 256

@@ -2,20 +2,22 @@
 
 接口统一执行会话鉴权和 CSRF 校验，并把平台异常转换成稳定的 JSON 错误码。
 工单筛选参数与页面路由共用 parse_order_filters，保证首屏和局部刷新语义一致。
+工单列表与详情均实时查询上游，本地不保留任何快照。
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, request, session
+from flask import Blueprint, current_app, jsonify, request
 
 from backend.auth.cas_client import SessionExpired
 from backend.platform.client import PlatformBusinessError, PlatformError
 from shared.config import config_to_dict, with_config_updates
 from shared.filters import parse_order_filters
+from shared.models import TodoTask, WorkOrder
 from webapp.routes.decorators import api_login_required, check_csrf
+from webapp.services.orders import fetch_work_orders
 
 bp = Blueprint("api", __name__, url_prefix="/api/v1")
 
@@ -28,24 +30,24 @@ def _error(error: str, message: str, status: int):
     return jsonify({"error": error, "message": message}), status
 
 
-def _row(row: Any) -> dict[str, Any]:
+def _row(order: WorkOrder) -> dict[str, Any]:
     return {
-        "order_id": row["order_id"],
-        "number": row["number"],
-        "title": row["title"],
-        "status": row["status"],
-        "current_node": row["current_node"],
-        "assignee": row["assignee"],
-        "created_at": row["created_at"],
-        "due_at": row["due_at"],
-        "process_instance_id": row["process_instance_id"],
-        "task_id": row["task_id"],
-        "process_version": row["process_version"],
-        "updated_at": row["updated_at"],
+        "order_id": order.order_id,
+        "number": order.number,
+        "title": order.title,
+        "status": order.status,
+        "current_node": order.current_node,
+        "assignee": order.assignee,
+        "created_at": order.created_at,
+        "due_at": order.due_at,
+        "process_instance_id": order.process_instance_id,
+        "task_id": order.task_id,
+        "process_version": order.process_version,
+        "updated_at": "",
     }
 
 
-def _task_row(task: Any) -> dict[str, Any]:
+def _task_row(task: TodoTask) -> dict[str, Any]:
     return {
         "task_id": task.task_id,
         "order_id": task.order_id,
@@ -74,11 +76,11 @@ def _task_ids_payload() -> list[str] | None:
     return [task_id.strip() for task_id in task_ids]
 
 
-def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config: Any, cities: tuple[str, ...] = ()) -> list[Any]:
+def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config: Any, cities: tuple[str, ...] = ()) -> list[TodoTask]:
     """Read every upstream page before applying the requested city scope."""
     page_index = 1
     page_size = 100
-    tasks: list[Any] = []
+    tasks: list[TodoTask] = []
     seen_pages: set[int] = set()
     while page_index not in seen_pages:
         seen_pages.add(page_index)
@@ -162,24 +164,7 @@ def claim_pending_tasks():
         }
         if any(task_id not in assigned_ids for task_id in task_ids):
             return jsonify({"error": "claim_unconfirmed", "message": "领取结果未确认，请刷新后重试"}), 409
-        config = current_app.extensions["app_config"]
-        db = current_app.extensions["database"]
-        from shared.models import WorkOrder
-        records = []
-        updated = []
-        for task_id in task_ids:
-            row = db.get_work_order_by_task_id(task_id)
-            if row is not None and row["assignee"] != login_id:
-                records.append(WorkOrder(
-                    order_id=row["order_id"], number=row["number"], title=row["title"], status=row["status"],
-                    current_node=row["current_node"], assignee=login_id, created_at=row["created_at"], due_at=row["due_at"],
-                    process_instance_id=row["process_instance_id"], task_id=row["task_id"], process_version=row["process_version"],
-                    raw=json.loads(row["raw_json"] or "{}"),
-                ))
-            updated.append(task_id)
-        if records:
-            db.upsert_orders(records)
-        return jsonify({"message": "领取成功", "task_ids": updated, "assignee": login_id})
+        return jsonify({"message": "领取成功", "task_ids": task_ids, "assignee": login_id})
     except SessionExpired:
         return jsonify({"error": "session_expired", "message": "平台会话已失效"}), 401
     except PlatformBusinessError:
@@ -189,37 +174,37 @@ def claim_pending_tasks():
         return jsonify({"error": "upstream_unavailable", "message": "领取服务暂时不可用"}), 502
 
 
-
-@bp.get("/dashboard")
-@api_login_required
-def dashboard():
-    config = current_app.extensions["app_config"]
-    db = current_app.extensions["database"]
-    latest = db.latest_sync_run()
-    return jsonify({
-        "stats": db.dashboard_stats(),
-        "latest_sync": dict(latest) if latest else None,
-    })
-
-
 @bp.get("/orders")
 @api_login_required
 def orders():
-    db = current_app.extensions["database"]
     page = max(1, request.args.get("page", 1, type=int))
     page_size = min(500, max(10, request.args.get("page_size", 50, type=int)))
     try:
         filters = parse_order_filters(request.args)
     except ValueError as exc:
         return _error("invalid_filter", str(exc), 400)
-    city_keywords = filters.pop("city")
-    filters.pop("start_date")
-    filters.pop("end_date")
-    rows = db.list_work_orders(limit=page_size, offset=(page - 1) * page_size, title_keywords=city_keywords, **filters)
-    total = db.count_work_orders(title_keywords=city_keywords, **filters)
+    try:
+        client = current_app.extensions["web_auth"].platform(request.web_auth_context)
+        config = current_app.extensions["app_config"]
+        items = fetch_work_orders(
+            client,
+            request.web_user.login_id,
+            config,
+            keyword=filters["keyword"],
+            status=filters["status"],
+            node=filters["node"],
+            cities=filters["city"],
+            start_time=filters["start_time"],
+            end_time=filters["end_time"],
+        )
+    except SessionExpired:
+        return jsonify({"error": "session_expired", "message": "平台会话已失效"}), 401
+    except (PlatformError, ValueError):
+        return jsonify({"error": "upstream_unavailable", "message": "工单服务暂时不可用"}), 502
+    start = (page - 1) * page_size
     return jsonify({
-        "items": [_row(row) for row in rows],
-        "total": total,
+        "items": [_row(order) for order in items[start:start + page_size]],
+        "total": len(items),
         "page": page,
         "page_size": page_size,
     })
@@ -228,11 +213,17 @@ def orders():
 @bp.get("/orders/<order_id>")
 @api_login_required
 def order_detail(order_id: str):
-    db = current_app.extensions["database"]
-    row = db.get_work_order(order_id)
-    if row is None:
+    try:
+        client = current_app.extensions["web_auth"].platform(request.web_auth_context)
+        config = current_app.extensions["app_config"]
+        detail = client.get_detail(order_id)
+    except SessionExpired:
+        return jsonify({"error": "session_expired", "message": "平台会话已失效"}), 401
+    except (PlatformError, ValueError):
+        return jsonify({"error": "upstream_unavailable", "message": "工单详情暂时不可用"}), 502
+    if not isinstance(detail, dict) or not detail:
         return jsonify({"error": "not_found", "message": "工单不存在"}), 404
-    return jsonify({"order": _row(row), "events": [dict(event) for event in db.list_events(order_id)]})
+    return jsonify({"order": detail})
 
 
 @bp.get("/process")
@@ -246,51 +237,6 @@ def process_metadata():
     except Exception:
         _logger().exception("加载流程信息失败")
         return _error("upstream_unavailable", "流程信息暂时不可用", 502)
-
-
-def _sync_job_payload(job: Any) -> dict[str, Any]:
-    result = {
-        "job_id": job.job_id,
-        "status": job.status,
-        "progress": job.progress,
-        "message": job.message,
-        "error": job.error,
-    }
-    if job.summary:
-        result["summary"] = {
-            "total": job.summary.total,
-            "added": job.summary.added,
-            "changed": job.summary.changed,
-        }
-    return result
-
-
-@bp.post("/sync")
-@api_login_required
-def start_sync():
-    check_csrf()
-    try:
-        auth_context = request.web_auth_context
-        client = current_app.extensions["web_auth"].platform(auth_context)
-        job = current_app.extensions["sync_jobs"].submit(
-            auth_context.context_id,
-            client,
-            request.web_user,
-            current_app.extensions["app_config"],
-        )
-    except RuntimeError:
-        _logger().exception("提交同步任务失败")
-        return _error("sync_unavailable", "同步服务暂不可用", 503)
-    return jsonify(_sync_job_payload(job)), 202
-
-
-@bp.get("/sync/<job_id>")
-@api_login_required
-def sync_status(job_id: str):
-    job = current_app.extensions["sync_jobs"].get(job_id)
-    if job is None or job.context_id != request.web_auth_context.context_id:
-        return jsonify({"error": "not_found", "message": "同步任务不存在"}), 404
-    return jsonify(_sync_job_payload(job))
 
 
 @bp.get("/settings")

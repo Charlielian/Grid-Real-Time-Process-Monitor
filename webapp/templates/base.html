@@ -10,10 +10,9 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="{{ url_for('web.dashboard') }}">微网格实时流程监控</a>
+    <a class="brand" href="{{ url_for('web.orders') }}">微网格实时流程监控</a>
     {% if current_user %}
     <nav>
-      <a href="{{ url_for('web.dashboard') }}">总览</a>
       <a href="{{ url_for('web.orders') }}">工单</a>
       <a href="{{ url_for('web.pending_tasks') }}">待领取</a>
       <a href="{{ url_for('web.settings') }}">设置</a>

@@ -30,14 +30,12 @@ def test_parse_login_page_rejects_missing_fields() -> None:
 def test_app_config_validation() -> None:
     config = AppConfig()
     assert config.origin.startswith("https://")
-    assert config.work_order_retention_days == 90
-    assert config.wal_max_size_mb == 256
     with pytest.raises(ValueError):
         AppConfig(base_url="http://example.test")
     with pytest.raises(ValueError):
-        AppConfig(work_order_retention_days=-1)
+        AppConfig(poll_interval_seconds=4)
     with pytest.raises(ValueError):
-        AppConfig(database_cleanup_interval_seconds=10)
+        AppConfig(lookback_hours=0)
 
 
 def _write_complete_config(paths, **updates) -> None:
@@ -114,10 +112,7 @@ def test_config_store_save_round_trips_and_preserves_comments(tmp_path) -> None:
         "lookback_hours: 24\npage_size: 50\nauto_sync: false\n"
         "ca_bundle: null\ntarget_process_title: 微网格实时优化流程\n"
         "target_process_key: proc_wwg_ssyhlc\ntarget_title_keywords:\n  - 阳江\n"
-        "auto_claim_pending_tasks: false\nwork_order_retention_days: 90\n"
-        "work_order_event_retention_days: 180\nsync_run_retention_days: 90\n"
-        "database_cleanup_interval_seconds: 3600\ndatabase_cleanup_batch_size: 500\n"
-        "database_max_size_mb: 1024\nwal_max_size_mb: 256\n",
+        "auto_claim_pending_tasks: false\n",
         encoding="utf-8",
     )
     store = ConfigStore(paths)
@@ -160,15 +155,6 @@ def test_app_config_rejects_invalid_deployment_values() -> None:
         AppConfig(target_title_keywords=("",))
     with pytest.raises(ValueError):
         AppConfig(target_process_key=" ")
-
-
-def test_app_config_rejects_invalid_maintenance_types() -> None:
-    with pytest.raises(ValueError):
-        AppConfig(database_max_size_mb="large")
-    with pytest.raises(ValueError):
-        AppConfig(wal_max_size_mb=True)
-    with pytest.raises(ValueError):
-        AppConfig(database_cleanup_batch_size=1.5)
 
 
 def test_rsa_pkcs1_encrypts_with_real_key() -> None:
