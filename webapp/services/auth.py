@@ -19,7 +19,7 @@ from typing import Any
 import keyring
 import requests
 
-from backend.auth.cas_client import CasClient, SessionFactory, SessionExpired
+from backend.auth.cas_client import AuthError, CasClient, SessionFactory, SessionExpired
 from backend.auth.cookie_store import CookieStore
 from backend.platform.client import PlatformClient
 from shared.config import AppConfig
@@ -199,10 +199,9 @@ class WebAuthService:
     def restore(self, context: WebAuthContext, login_id: str) -> UserInfo:
         if not self.cookies.load(login_id, context.session):
             raise SessionExpired("没有可用的保存会话")
+        client = CasClient(self.registry.config, context.session, self.logger)
         try:
-            user = CasClient(self.registry.config, context.session, self.logger).check_session(
-                expected_login_id=login_id
-            )
+            user = client.check_session(expected_login_id=login_id)
         except SessionExpired:
             self.cookies.clear(login_id)
             self.registry.remove(context.context_id)
@@ -211,6 +210,16 @@ class WebAuthService:
             self.logger.warning("恢复登录会话时上游网络暂不可用")
             raise
         context.user = user
+        # 恢复的保存会话同样缺少业务上下文（engine-extend 的 JSESSIONID），
+        # 这里重新进入一次门户补齐；失败时按会话失效处理，避免带残缺会话继续。
+        try:
+            client.enter_portal()
+        except (SessionExpired, AuthError):
+            self.cookies.clear(login_id)
+            self.registry.remove(context.context_id)
+            raise SessionExpired("恢复登录会话时进入业务门户失败")
+        except requests.RequestException:
+            self.logger.warning("恢复登录会话时进入业务门户网络暂不可用")
         context.touch()
         if self.database is not None:
             self.database.upsert_saved_account(user.login_id, user.display_name)
@@ -264,12 +273,22 @@ class WebAuthService:
     def login(self, context: WebAuthContext, username: str, password: str, captcha: str, sms_code: str) -> UserInfo:
         if not context.captcha_verified or context.username != username or not context.sms_sent_at:
             raise ValueError("请先完成图形验证码校验并发送短信")
-        user = CasClient(self.registry.config, context.session, self.logger).login(
-            username, password, captcha, sms_code
-        )
+        client = CasClient(self.registry.config, context.session, self.logger)
+        user = client.login(username, password, captcha, sms_code)
         context.user = user
         context.captcha_page = None
         context.captcha_verified = False
+        # 进入业务门户以建立各业务上下文的会话（如 engine-extend 的
+        # JSESSIONID）；浏览器也是先打开门户再请求业务接口。失效视为登录不
+        # 完整，网络异常则保留用户态，让后续业务请求去发现会话问题。
+        try:
+            client.enter_portal()
+        except (SessionExpired, AuthError):
+            context.user = None
+            self.registry.remove(context.context_id)
+            raise
+        except requests.RequestException:
+            self.logger.warning("进入业务门户时上游网络暂不可用: %s", username)
         context.touch()
         if not self.cookies.save(user.login_id, context.session):
             self.logger.warning("登录成功但保存会话失败: %s", user.login_id)

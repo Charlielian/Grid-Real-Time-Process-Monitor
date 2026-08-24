@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import random
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -229,7 +230,14 @@ class CasClient:
         该方法只关心跳转和会话有效性，不解析门户页面内容；失效会话抛出
         ``SessionExpired``，其他 HTTP 错误由 ``raise_for_status`` 抛出。
         """
-        query = urlencode({"url": TARGET_MODULE, "__PID": TARGET_PORTAL_PID})
+        params: dict[str, str] = {"url": TARGET_MODULE, "__PID": TARGET_PORTAL_PID}
+        # 浏览器请求 urlAction 时会附带 CASTGC 作为 token 参数，兼容
+        # 尚缺少 portal 上下文 JSESSIONID 的场景。从当前 Cookie 中提取。
+        for cookie in self.session.cookies:
+            if cookie.name == "CASTGC":
+                params["token"] = cookie.value
+                break
+        query = urlencode(params)
         response = self.session.get(
             f"{self.config.base_url}/pro-portal/pure/urlAction.action?{query}",
             timeout=self.timeout,
