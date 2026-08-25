@@ -140,11 +140,14 @@ def settings() -> str:
                 lookback_hours=int(request.form.get("lookback_hours", current.lookback_hours)),
                 page_size=int(request.form.get("page_size", current.page_size)),
                 auto_sync=request.form.get("auto_sync") == "on",
+                auto_claim_pending_tasks=request.form.get("auto_claim_pending_tasks") == "on",
+                auto_claim_interval_seconds=int(request.form.get("auto_claim_interval_seconds", current.auto_claim_interval_seconds)),
             )
             current_app.extensions["config_store"].save(updated)
             current_app.extensions["app_config"] = updated
             current_app.extensions["web_auth"].update_config(updated)
             current_app.extensions["session_monitor"].update_config(updated)
+            current_app.extensions["auto_claim"].update_config(updated)
             flash("设置已保存", "success")
         except (TypeError, ValueError):
             current_app.extensions["logger"].exception("更新页面设置失败")

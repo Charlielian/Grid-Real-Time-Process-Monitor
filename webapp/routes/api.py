@@ -18,6 +18,7 @@ from shared.filters import parse_order_filters
 from shared.models import TodoTask, WorkOrder
 from webapp.routes.decorators import api_login_required, check_csrf
 from webapp.services.orders import fetch_work_orders
+from webapp.services.pending_tasks import claimable_tasks, query_all_todo_tasks
 
 bp = Blueprint("api", __name__, url_prefix="/api/v1")
 
@@ -28,15 +29,6 @@ def _logger() -> Any:
 
 def _error(error: str, message: str, status: int):
     return jsonify({"error": error, "message": message}), status
-
-
-def _claimable_tasks(pending: list[TodoTask], keywords: tuple[str, ...]) -> list[TodoTask]:
-    """返回标题命中任一目标关键词（默认阳江）的可领取任务。
-
-    领取链路（无论自动还是手动触发）统一以这里允许的任务为准，防止越权领取
-    与业务无关的任务。
-    """
-    return [task for task in pending if any(keyword in task.title for keyword in keywords)]
 
 
 def _row(order: WorkOrder) -> dict[str, Any]:
@@ -87,34 +79,7 @@ def _task_ids_payload() -> list[str] | None:
 
 def _query_all_todo_tasks(client: Any, login_id: str, *, assigned: bool, config: Any, cities: tuple[str, ...] = ()) -> list[TodoTask]:
     """Read every upstream page before applying the requested city scope."""
-    page_index = 1
-    page_size = 100
-    tasks: list[TodoTask] = []
-    effective_page_size = 0
-    while True:
-        result = client.query_todo_tasks(
-            login_id,
-            assigned=assigned,
-            page_index=page_index,
-            page_size=page_size,
-        )
-        count = len(result.items)
-        if count == 0:
-            _logger().info("待领取分页结束: page_index=%d total=%d collected=%d", page_index, result.total, len(tasks))
-            break
-        effective_page_size = max(effective_page_size, count)
-        _logger().info(
-            "待领取分页: page_index=%d page_size=%d effective=%d total=%d count=%d collected=%d",
-            page_index, page_size, effective_page_size, result.total, count, len(tasks),
-        )
-        tasks.extend(
-            task for task in result.items
-            if not cities or any(city in task.title for city in cities)
-        )
-        if page_index * effective_page_size >= result.total:
-            break
-        page_index += 1
-    return tasks
+    return query_all_todo_tasks(client, login_id, assigned=assigned, config=config, cities=cities)
 
 
 def _parse_bool(value: Any, field: str) -> bool:
@@ -145,7 +110,7 @@ def pending_tasks():
         items = _query_all_todo_tasks(client, request.web_user.login_id, assigned=False, config=config, cities=cities)
         # 标题匹配目标关键词的任务才允许领取，其他仅展示。
         keywords = config.target_title_keywords
-        claimable = _claimable_tasks(items, keywords)
+        claimable = claimable_tasks(items, keywords)
         claimable_ids = [task.task_id for task in claimable if task.task_id]
         start = (page - 1) * page_size
         return jsonify({
@@ -176,7 +141,7 @@ def claim_pending_tasks():
         pending = _query_all_todo_tasks(client, login_id, assigned=False, config=config)
         # 只允许领取标题匹配目标关键词的任务（默认阳江）。
         keywords = config.target_title_keywords
-        claimable = _claimable_tasks(pending, keywords)
+        claimable = claimable_tasks(pending, keywords)
         claimable_by_id = {task.task_id: task for task in claimable if task.task_id}
         missing = [task_id for task_id in task_ids if task_id not in claimable_by_id]
         if missing:
@@ -284,6 +249,8 @@ def update_settings():
             lookback_hours=int(data.get("lookback_hours", current.lookback_hours)),
             page_size=int(data.get("page_size", current.page_size)),
             auto_sync=_parse_bool(data["auto_sync"], "auto_sync") if "auto_sync" in data else current.auto_sync,
+            auto_claim_pending_tasks=_parse_bool(data["auto_claim_pending_tasks"], "auto_claim_pending_tasks") if "auto_claim_pending_tasks" in data else current.auto_claim_pending_tasks,
+            auto_claim_interval_seconds=int(data.get("auto_claim_interval_seconds", current.auto_claim_interval_seconds)),
         )
     except (TypeError, ValueError):
         _logger().exception("更新设置失败")
@@ -296,4 +263,5 @@ def update_settings():
     current_app.extensions["app_config"] = updated
     current_app.extensions["web_auth"].update_config(updated)
     current_app.extensions["session_monitor"].update_config(updated)
+    current_app.extensions["auto_claim"].update_config(updated)
     return jsonify(config_to_dict(updated))

@@ -15,6 +15,7 @@ from flask import Flask, current_app, session
 from shared.config import AppConfig, AppPaths, ConfigStore, configure_logging
 from webapp.services.auth import SessionRegistry, WebAuthService
 from webapp.services.session_monitor import SessionMonitor
+from webapp.services.auto_claim import AutoClaimService
 
 
 def _secret_key(paths: AppPaths, test_config: dict[str, Any] | None) -> str:
@@ -66,8 +67,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     registry = SessionRegistry(config, logger, ttl_seconds=int(app.config.get("AUTH_CONTEXT_TTL", 1800)))
     auth = WebAuthService(registry, logger)
     monitor = SessionMonitor(config, logger)
+    auto_claim = AutoClaimService(config, logger)
     if not app.config.get("TESTING"):
         monitor.start()
+        auto_claim.start()
     app.extensions.update({
         "paths": paths,
         "logger": logger,
@@ -76,6 +79,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         "session_registry": registry,
         "web_auth": auth,
         "session_monitor": monitor,
+        "auto_claim": auto_claim,
     })
 
     shutdown_lock = __import__("threading").Lock()
@@ -91,6 +95,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             monitor.shutdown(timeout=max(0.0, deadline - time.monotonic()))
         except Exception:
             logger.exception("会话监控关闭失败")
+        try:
+            auto_claim.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("自动领取服务关闭失败")
         try:
             registry.shutdown(timeout=max(0.0, deadline - time.monotonic()))
         except Exception:

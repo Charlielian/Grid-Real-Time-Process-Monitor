@@ -21,4 +21,6 @@ target_process_title: 微网格实时优化流程
 # 上游流程的固定标识。
 target_process_key: proc_wwg_ssyhlc
 # 是否自动领取待领取任务；false 表示只展示并由用户手动领取。
-auto_claim_pending_tasks: false
+auto_claim_pending_tasks: true
+# 后端自动领取轮询间隔（秒），范围 5-3600；仅在 auto_claim_pending_tasks 为 true 时生效。
+auto_claim_interval_seconds: 60

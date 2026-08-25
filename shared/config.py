@@ -114,6 +114,7 @@ class AppConfig:
     target_process_key: str = DEFAULT_TARGET_PROCESS_KEY
     target_title_keywords: tuple[str, ...] = DEFAULT_TARGET_TITLE_KEYWORDS
     auto_claim_pending_tasks: bool = False
+    auto_claim_interval_seconds: int = 60
 
     def __post_init__(self) -> None:
         """规范化并校验配置，确保网络、轮询、分页和维护参数可安全使用。"""
@@ -146,6 +147,8 @@ class AppConfig:
             raise ValueError("target_title_keywords 必须是非空字符串列表")
         if not isinstance(self.auto_claim_pending_tasks, bool):
             raise ValueError("auto_claim_pending_tasks 必须是布尔值")
+        if not 5 <= self.auto_claim_interval_seconds <= 3600:
+            raise ValueError("auto_claim_interval_seconds 超出允许范围")
 
         # 指定 CA 文件必须在启动时存在，否则请求会在运行中才失败。
         if self.ca_bundle and not Path(self.ca_bundle).is_file():
@@ -221,6 +224,7 @@ class ConfigStore:
         """按字段类型转换 YAML 值，并拒绝未知字段或布尔冒充整数。"""
         if name in {
             "web_port", "poll_interval_seconds", "heartbeat_interval_seconds", "lookback_hours", "page_size",
+            "auto_claim_interval_seconds",
             }:
             if isinstance(value, bool):
                 raise ValueError("必须是整数")
@@ -263,6 +267,8 @@ class ConfigStore:
             raise ValueError("超出允许范围[1,720]")
         elif name == "page_size" and not 10 <= value <= 500:
             raise ValueError("超出允许范围[10,500]")
+        elif name == "auto_claim_interval_seconds" and not 5 <= value <= 3600:
+            raise ValueError("超出允许范围[5,3600]")
         elif name == "ca_bundle" and value and not Path(value).is_file():
             raise ValueError("指定的 CA 文件不存在")
 
@@ -487,4 +493,5 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
         "target_process_title": config.target_process_title,
         "target_process_key": config.target_process_key,
         "auto_claim_pending_tasks": config.auto_claim_pending_tasks,
+        "auto_claim_interval_seconds": config.auto_claim_interval_seconds,
     }
