@@ -12,6 +12,26 @@
     <button type="button" class="button" id="pending-claim-all">一键领取（仅阳江）</button>
     <button type="button" class="button" id="pending-auto-claim-toggle">启动自动领取</button>
   </div>
+  <section class="card stats-panel" id="auto-claim-stats-panel" hidden>
+    <h2>自动领取统计</h2>
+    <div class="stats-overview">
+      <div class="stats-metric"><span>累计领取</span><strong id="stats-total">-</strong></div>
+      <div class="stats-metric"><span>本次启动</span><strong id="stats-session">-</strong></div>
+      <div class="stats-metric"><span>上次领取</span><strong id="stats-last">-</strong></div>
+    </div>
+    <div class="stats-body">
+      <div class="stats-accounts">
+        <h3>各账号领取</h3>
+        <table class="stats-table"><thead><tr><th>账号</th><th>累计领取</th></tr></thead>
+        <tbody id="stats-accounts-body"><tr><td colspan="2" class="muted">暂无领取记录</td></tr></tbody></table>
+      </div>
+      <div class="stats-history">
+        <h3>最近领取</h3>
+        <table class="stats-table"><thead><tr><th>时间</th><th>账号</th><th>条数</th></tr></thead>
+        <tbody id="stats-history-body"><tr><td colspan="3" class="muted">暂无领取记录</td></tr></tbody></table>
+      </div>
+    </div>
+  </section>
   <form class="filters pending-filters" method="get">
     {{ city_picker(cities, selected_cities, 'pending-city') }}
     <button class="button filter-submit" type="submit">筛选</button>

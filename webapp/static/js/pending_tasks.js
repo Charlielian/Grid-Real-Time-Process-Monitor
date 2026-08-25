@@ -16,7 +16,8 @@
   const refresh = document.querySelector('#pending-refresh');
   const claimAll = document.querySelector('#pending-claim-all');
   const autoClaimToggle = document.querySelector('#pending-auto-claim-toggle');
-  if (!page || !rows || !message || !refresh || !claimAll || !autoClaimToggle) return;
+  const statsPanel = document.querySelector('#auto-claim-stats-panel');
+  if (!page || !rows || !message || !refresh || !claimAll || !autoClaimToggle || !statsPanel) return;
 
   let autoClaimEnabled = page.dataset.autoClaim === 'true';
   let autoClaimTimer = null;
@@ -35,6 +36,91 @@
   // claimable_ids tracks which task IDs the backend says are OK to claim.
   let claimableIds = [];
   const maxAutoClaimFailures = 3;
+
+  // ---- 统计面板 ----
+  const statsTotal = document.querySelector('#stats-total');
+  const statsSession = document.querySelector('#stats-session');
+  const statsLast = document.querySelector('#stats-last');
+  const statsAccountsBody = document.querySelector('#stats-accounts-body');
+  const statsHistoryBody = document.querySelector('#stats-history-body');
+
+  const formatLastTime = (iso) => {
+    if (!iso) return '暂无';
+    const when = new Date(iso);
+    if (!Number.isFinite(when.getTime())) return iso;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(when.getHours())}:${pad(when.getMinutes())}:${pad(when.getSeconds())}`;
+  };
+
+  const renderStats = (s) => {
+    const data = s || {};
+    statsPanel.hidden = false;
+    statsTotal.textContent = `${Number(data.total_claimed || 0)} 条`;
+    statsSession.textContent = `${Number(data.session_claimed || 0)} 条`;
+    const last = data.last_claim;
+    const lastText = formatLastTime(last && last.time);
+    statsLast.textContent = lastText;
+    let recent = false;
+    if (last && last.time) {
+      const when = new Date(last.time);
+      if (Number.isFinite(when.getTime())) recent = (Date.now() - when.getTime()) <= 30 * 60 * 1000;
+    }
+    statsLast.classList.toggle('recent', recent);
+
+    const perAccount = data.per_account || {};
+    const accountEntries = Object.entries(perAccount).sort((a, b) => b[1] - a[1]);
+    statsAccountsBody.replaceChildren();
+    if (!accountEntries.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 2;
+      td.className = 'muted';
+      td.textContent = '暂无领取记录';
+      tr.append(td);
+      statsAccountsBody.append(tr);
+    } else {
+      for (const [loginId, count] of accountEntries) {
+        const tr = document.createElement('tr');
+        for (const value of [loginId, `${count} 条`]) {
+          const td = document.createElement('td');
+          td.textContent = value;
+          tr.append(td);
+        }
+        statsAccountsBody.append(tr);
+      }
+    }
+
+    const history = data.history || [];
+    statsHistoryBody.replaceChildren();
+    if (!history.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 3;
+      td.className = 'muted';
+      td.textContent = '暂无领取记录';
+      tr.append(td);
+      statsHistoryBody.append(tr);
+    } else {
+      for (const item of history) {
+        const tr = document.createElement('tr');
+        for (const value of [formatLastTime(item.time), item.login_id, `${item.count} 条`]) {
+          const td = document.createElement('td');
+          td.textContent = value;
+          tr.append(td);
+        }
+        statsHistoryBody.append(tr);
+      }
+    }
+  };
+
+  const loadStats = async () => {
+    try {
+      const s = await request('/api/v1/auto-claim-stats', {signal: new AbortController().signal});
+      renderStats(s);
+    } catch {
+      // 统计为辅助信息，加载失败不打断主流程，面板保持上次内容。
+    }
+  };
 
   const queryUrl = () => {
     const query = new URLSearchParams(window.location.search);
@@ -114,6 +200,7 @@
             : (error.message || '自动领取失败，将稍后重试');
         }
       }
+      loadStats();
     } catch (error) {
       if (error.code === 'timeout' || error.code === 'network') refreshFailures += 1;
       message.textContent = error.message || '待领取任务加载失败';
@@ -135,6 +222,7 @@
     const delay = Math.min(120000, pollInterval * (2 ** Math.min(refreshFailures, 4)));
     timer = setTimeout(async () => {
       await load({automatic: true});
+      loadStats();
       schedule();
     }, delay);
   };

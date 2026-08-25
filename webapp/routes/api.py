@@ -265,3 +265,11 @@ def update_settings():
     current_app.extensions["session_monitor"].update_config(updated)
     current_app.extensions["auto_claim"].update_config(updated)
     return jsonify(config_to_dict(updated))
+
+
+@bp.get("/auto-claim-stats")
+@api_login_required
+def auto_claim_stats():
+    """返回后端自动领取服务的统计信息。"""
+    service = current_app.extensions["auto_claim"]
+    return jsonify(service.stats())

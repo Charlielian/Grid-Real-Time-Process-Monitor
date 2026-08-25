@@ -67,7 +67,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     registry = SessionRegistry(config, logger, ttl_seconds=int(app.config.get("AUTH_CONTEXT_TTL", 1800)))
     auth = WebAuthService(registry, logger)
     monitor = SessionMonitor(config, logger)
-    auto_claim = AutoClaimService(config, logger)
+    auto_claim = AutoClaimService(config, logger, data_dir=paths.root)
     if not app.config.get("TESTING"):
         monitor.start()
         auto_claim.start()

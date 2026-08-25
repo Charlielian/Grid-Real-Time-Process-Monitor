@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from shared.config import AppConfig
@@ -103,12 +105,12 @@ class _FakePlatformClient:
         return {"stat": "1"}
 
 
-def _make_service(monkeypatch, *, enabled: bool = True, pending: list[TodoTask] | None = None, cookies_loaded: bool = True):
+def _make_service(monkeypatch, *, enabled: bool = True, pending: list[TodoTask] | None = None, cookies_loaded: bool = True, data_dir=None):
     config = AppConfig(
         auto_claim_pending_tasks=enabled,
         auto_claim_interval_seconds=5,
     )
-    service = AutoClaimService(config, interval_seconds=1000)
+    service = AutoClaimService(config, interval_seconds=1000, data_dir=data_dir)
     service.cookies = _FakeCookies(loaded=cookies_loaded)
     service.accounts = _FakeAccounts([
         {"login_id": "account-1", "heartbeat_status": "unknown"},
@@ -169,6 +171,57 @@ def test_auto_claim_disabled_does_nothing(monkeypatch) -> None:
     service._run_cycle()
     assert fake_cas.checked == []
     assert fake_platform.assign_calls == []
+
+
+def test_auto_claim_records_statistics(monkeypatch, tmp_path) -> None:
+    pending = [_task("t1", "阳江 A"), _task("t2", "广州 B"), _task("t3", "阳江优化")]
+    service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)
+
+    service._claim_for_account("account-1")
+    service._claim_for_account("account-1")
+
+    stats = service.stats()
+    assert stats["total_claimed"] == 4
+    assert stats["session_claimed"] == 4
+    assert stats["per_account"]["account-1"] == 4
+    assert stats["last_claim"] is not None
+    assert len(stats["history"]) == 2
+
+    stats_file = tmp_path / "auto_claim_stats.json"
+    assert stats_file.exists()
+    saved = json.loads(stats_file.read_text(encoding="utf-8"))
+    assert saved["total_claimed"] == 4
+    # 文件里不写本次启动计数（跨重启不可靠）
+    assert "session_claimed" not in saved
+
+
+def test_auto_claim_stats_survives_restart(tmp_path) -> None:
+    config = AppConfig(auto_claim_pending_tasks=True, auto_claim_interval_seconds=5)
+    first = AutoClaimService(config, interval_seconds=1000, data_dir=tmp_path)
+    first._record_claim("account-1", ["t1", "t3"])
+
+    restored = AutoClaimService(config, interval_seconds=1000, data_dir=tmp_path)
+    assert restored.stats()["total_claimed"] == 0
+    restored.start()
+    restored.shutdown()
+    stats = restored.stats()
+    assert stats["total_claimed"] == 2
+    assert stats["session_claimed"] == 0
+    assert stats["per_account"]["account-1"] == 2
+    assert stats["history"][0]["time"]
+
+
+def test_auto_claim_stats_file_unwritable_still_works(monkeypatch, tmp_path) -> None:
+    pending = [_task("t1", "阳江 A")]
+    service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)
+
+    def fail_write(_text, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("webapp.services.auto_claim.Path.write_text", fail_write)
+    service._claim_for_account("account-1")
+
+    assert service.stats()["total_claimed"] == 1
 
 
 def test_auto_claim_shutdown_is_idempotent() -> None:

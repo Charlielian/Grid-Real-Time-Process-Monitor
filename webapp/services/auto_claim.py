@@ -2,13 +2,17 @@
 
 使用已保存的 keyring Cookie 为每个账号创建会话，按固定间隔轮询上游待领取
 任务，仅领取标题匹配 target_title_keywords（默认阳江）的任务。该服务进
-程启动即运行，页面关闭不影响其执行。
+程启动即运行，页面关闭不影响其执行。每次领取成功后记录统计到 JSON 文件，
+支持 API 查询统计信息。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -24,8 +28,11 @@ class AutoClaimService:
     """后台线程，按固定间隔轮询上游并自动领取匹配关键词的任务。
 
     与页面 JS 自动领取互不依赖；页面关闭后该服务继续运行。仅在所有已保存
-    账号上执行，跳过心跳状态为 expired 的账号。
+    账号上执行，跳过心跳状态为 expired 的账号。每次成功领取后记录统计信息
+    到 data/auto_claim_stats.json，同时维护进程内 session_claimed 计数器。
     """
+
+    _STATS_FILENAME = "auto_claim_stats.json"
 
     def __init__(
         self,
@@ -33,6 +40,7 @@ class AutoClaimService:
         logger: logging.Logger | None = None,
         *,
         interval_seconds: int | None = None,
+        data_dir: str | Path | None = None,
     ) -> None:
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
@@ -44,6 +52,16 @@ class AutoClaimService:
         self._sessions: dict[str, requests.Session] = {}
         self._thread: threading.Thread | None = None
         self._closed = False
+        # 统计
+        self._stats_path = Path(data_dir) / self._STATS_FILENAME if data_dir else None
+        self._stats: dict[str, Any] = {
+            "total_claimed": 0,
+            "per_account": {},
+            "last_claim": None,
+            "history": [],
+        }
+        self._session_claimed = 0
+        self._stats_lock = threading.Lock()
 
     def update_config(self, config: AppConfig) -> None:
         """热更新配置；会话在下一次轮询时重建。"""
@@ -59,6 +77,66 @@ class AutoClaimService:
                 session.close()
             except Exception:
                 pass
+
+    # ---- 统计记录 ----
+
+    def _record_claim(self, login_id: str, task_ids: list[str]) -> None:
+        """记录一次成功领取：更新累计/分账号计数，追加历史并落盘。"""
+        count = len(task_ids)
+        now = datetime.now().isoformat(timespec="seconds")
+        entry = {"time": now, "login_id": login_id, "count": count}
+        with self._stats_lock:
+            self._stats["total_claimed"] = self._stats.get("total_claimed", 0) + count
+            per_account = self._stats.setdefault("per_account", {})
+            per_account[login_id] = per_account.get(login_id, 0) + count
+            self._stats["last_claim"] = entry
+            history = self._stats.setdefault("history", [])
+            history.append(entry)
+            self._stats["history"] = history[-200:]
+            self._session_claimed += count
+            self._write_stats_locked()
+
+    def _write_stats_locked(self) -> None:
+        """在持有 _stats_lock 时把统计写入 JSON 文件；失败仅记录日志。"""
+        if not self._stats_path:
+            return
+        tmp = self._stats_path.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps(self._stats, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._stats_path)
+        except OSError:
+            self.logger.exception("自动领取: 统计文件写入失败: %s", self._stats_path)
+
+    def _load_stats(self) -> None:
+        """从 JSON 文件恢复统计；文件损坏或不含历史时退回空统计。"""
+        if not self._stats_path or not self._stats_path.exists():
+            return
+        try:
+            with self._stats_lock:
+                loaded = json.loads(self._stats_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    self._stats = {
+                        "total_claimed": int(loaded.get("total_claimed", 0)),
+                        "per_account": dict(loaded.get("per_account", {})),
+                        "last_claim": loaded.get("last_claim"),
+                        "history": list(loaded.get("history", []))[-200:],
+                    }
+        except (OSError, ValueError, TypeError):
+            self.logger.exception("自动领取: 统计文件读取失败，使用空统计: %s", self._stats_path)
+
+    def stats(self) -> dict[str, Any]:
+        """返回统计快照（累计/分账号/本次启动/上次领取），供 API 使用。"""
+        with self._stats_lock:
+            per_account = dict(self._stats.get("per_account", {}))
+            last_claim = self._stats.get("last_claim")
+            history = list(self._stats.get("history", []))
+        return {
+            "total_claimed": self._stats.get("total_claimed", 0),
+            "per_account": per_account,
+            "session_claimed": self._session_claimed,
+            "last_claim": last_claim,
+            "history": history[-10:],
+        }
 
     def _session_for(self, login_id: str) -> requests.Session | None:
         """获取或创建账号的缓存会话；无有效 Cookie 时返回 None。"""
@@ -120,6 +198,7 @@ class AutoClaimService:
             return
         try:
             client.assign_tasks(login_id, task_ids)
+            self._record_claim(login_id, task_ids)
             self.logger.info(
                 "自动领取: 账号 %s 成功领取 %d 条任务（共 %d 条待领取）",
                 login_id, len(task_ids), len(pending),
@@ -148,12 +227,13 @@ class AutoClaimService:
                 pass
 
     def start(self) -> None:
-        """启动后台轮询线程。"""
+        """启动后台轮询线程前从磁盘恢复统计。"""
         with self._lock:
             if self._closed:
                 return
             if self._thread and self._thread.is_alive():
                 return
+            self._load_stats()
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="auto-claim", daemon=True)
             self._thread.start()

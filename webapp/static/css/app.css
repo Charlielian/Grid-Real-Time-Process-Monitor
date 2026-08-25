@@ -108,3 +108,29 @@ button:disabled { cursor: not-allowed; opacity: .55; }.button-row { display: fle
   .city-options { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 188px; }
   .filter-submit { width: 100%; }
 }
+
+/*
+ * 自动领取统计面板。
+ * 默认隐藏，首次加载后有数据时显示。上次领取时间在半小时内显示红色闪烁，
+ * 提醒用户自动领取仍在持续工作中。
+ */
+.stats-panel { margin-bottom: 18px; }
+.stats-panel h2 { margin-bottom: 12px; color: #1f2937; font-size: 16px; }
+.stats-overview { display: flex; gap: 24px; margin-bottom: 16px; }
+.stats-metric { flex: 1; }
+.stats-metric span { display: block; color: #64748b; font-size: 12px; }
+.stats-metric strong { display: block; margin-top: 4px; font-size: 22px; color: #1f2937; }
+.stats-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.stats-body h3 { margin: 0 0 8px; color: #475569; font-size: 13px; }
+.stats-table { width: 100%; border-collapse: collapse; }
+.stats-table th, .stats-table td { padding: 7px 10px; border-bottom: 1px solid #edf2f7; text-align: left; }
+.stats-table th { color: #64748b; font-size: 11px; font-weight: 600; background: #f8fafc; }
+.stats-table td { font-size: 13px; }
+.stats-table tbody tr:last-child td { border-bottom: 0; }
+.stats-table tbody tr:hover { background: #f8fbff; }
+@keyframes stats-recent-blink { 0%, 100% { color: #dc2626; } 50% { color: #fca5a5; } }
+.stats-metric strong.recent { animation: stats-recent-blink 1.2s ease-in-out infinite; }
+@media (max-width: 760px) {
+  .stats-overview { flex-direction: column; gap: 12px; }
+  .stats-body { grid-template-columns: 1fr; }
+}
