@@ -211,6 +211,23 @@ def test_auto_claim_stats_survives_restart(tmp_path) -> None:
     assert stats["history"][0]["time"]
 
 
+def test_auto_claim_records_claimed_task_details(monkeypatch, tmp_path) -> None:
+    pending = [_task("t1", "阳江 A"), _task("t2", "广州 B")]
+    service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)
+
+    service._claim_for_account("account-1")
+
+    stats = service.stats()
+    # 明细只记录实际领取的（标题含关键词）任务
+    assert [t["number"] for t in stats["recent_tasks"]] == ["t1"]
+    assert [t["title"] for t in stats["recent_tasks"]] == ["阳江 A"]
+    assert stats["recent_tasks"][0]["login_id"] == "account-1"
+
+    saved = json.loads((tmp_path / "auto_claim_stats.json").read_text(encoding="utf-8"))
+    assert len(saved["recent_tasks"]) == 1
+    assert saved["recent_tasks"][0]["number"] == "t1"
+
+
 def test_auto_claim_stats_file_unwritable_still_works(monkeypatch, tmp_path) -> None:
     pending = [_task("t1", "阳江 A")]
     service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)

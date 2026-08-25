@@ -31,6 +31,13 @@
         <tbody id="stats-history-body"><tr><td colspan="3" class="muted">暂无领取记录</td></tr></tbody></table>
       </div>
     </div>
+    <div class="stats-tasks">
+      <h3>最近领取工单明细</h3>
+      <div class="stats-table-wrap">
+        <table class="stats-table tasks-table"><thead><tr><th>时间</th><th>账号</th><th>工单编号</th><th>标题</th></tr></thead>
+        <tbody id="stats-tasks-body"><tr><td colspan="4" class="muted">暂无领取记录</td></tr></tbody></table>
+      </div>
+    </div>
   </section>
   <form class="filters pending-filters" method="get">
     {{ city_picker(cities, selected_cities, 'pending-city') }}

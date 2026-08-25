@@ -43,6 +43,7 @@
   const statsLast = document.querySelector('#stats-last');
   const statsAccountsBody = document.querySelector('#stats-accounts-body');
   const statsHistoryBody = document.querySelector('#stats-history-body');
+  const statsTasksBody = document.querySelector('#stats-tasks-body');
 
   const formatLastTime = (iso) => {
     if (!iso) return '暂无';
@@ -109,6 +110,28 @@
           tr.append(td);
         }
         statsHistoryBody.append(tr);
+      }
+    }
+
+    const tasks = data.recent_tasks || [];
+    statsTasksBody.replaceChildren();
+    if (!tasks.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 4;
+      td.className = 'muted';
+      td.textContent = '暂无领取记录';
+      tr.append(td);
+      statsTasksBody.append(tr);
+    } else {
+      for (const task of tasks) {
+        const tr = document.createElement('tr');
+        for (const value of [formatLastTime(task.time), task.login_id, task.number, task.title]) {
+          const td = document.createElement('td');
+          td.textContent = value || '';
+          tr.append(td);
+        }
+        statsTasksBody.append(tr);
       }
     }
   };

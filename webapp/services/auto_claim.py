@@ -20,6 +20,7 @@ import requests
 from backend.auth.cas_client import CasClient, SessionExpired, SessionFactory
 from backend.platform.client import PlatformBusinessError, PlatformClient, PlatformError
 from shared.config import AppConfig
+from shared.models import TodoTask
 from webapp.services.auth import AccountIndexStore, PersistentCookieStore
 from webapp.services.pending_tasks import claimable_tasks, query_all_todo_tasks
 
@@ -59,6 +60,7 @@ class AutoClaimService:
             "per_account": {},
             "last_claim": None,
             "history": [],
+            "recent_tasks": [],
         }
         self._session_claimed = 0
         self._stats_lock = threading.Lock()
@@ -80,8 +82,8 @@ class AutoClaimService:
 
     # ---- 统计记录 ----
 
-    def _record_claim(self, login_id: str, task_ids: list[str]) -> None:
-        """记录一次成功领取：更新累计/分账号计数，追加历史并落盘。"""
+    def _record_claim(self, login_id: str, task_ids: list[str], tasks: list[TodoTask] | None = None) -> None:
+        """记录一次成功领取：更新累计/分账号计数，追加历史、工单明细并落盘。"""
         count = len(task_ids)
         now = datetime.now().isoformat(timespec="seconds")
         entry = {"time": now, "login_id": login_id, "count": count}
@@ -93,6 +95,17 @@ class AutoClaimService:
             history = self._stats.setdefault("history", [])
             history.append(entry)
             self._stats["history"] = history[-200:]
+            # 记录最近领取工单明细（最多 200 条）
+            recent = self._stats.setdefault("recent_tasks", [])
+            if tasks:
+                for task in tasks:
+                    recent.append({
+                        "time": now,
+                        "login_id": login_id,
+                        "number": task.number or "",
+                        "title": task.title or "",
+                    })
+            self._stats["recent_tasks"] = recent[-200:]
             self._session_claimed += count
             self._write_stats_locked()
 
@@ -120,22 +133,25 @@ class AutoClaimService:
                         "per_account": dict(loaded.get("per_account", {})),
                         "last_claim": loaded.get("last_claim"),
                         "history": list(loaded.get("history", []))[-200:],
+                        "recent_tasks": list(loaded.get("recent_tasks", []))[-200:],
                     }
         except (OSError, ValueError, TypeError):
             self.logger.exception("自动领取: 统计文件读取失败，使用空统计: %s", self._stats_path)
 
     def stats(self) -> dict[str, Any]:
-        """返回统计快照（累计/分账号/本次启动/上次领取），供 API 使用。"""
+        """返回统计快照（累计/分账号/本次启动/上次领取/最近工单），供 API 使用。"""
         with self._stats_lock:
             per_account = dict(self._stats.get("per_account", {}))
             last_claim = self._stats.get("last_claim")
             history = list(self._stats.get("history", []))
+            recent_tasks = list(self._stats.get("recent_tasks", []))
         return {
             "total_claimed": self._stats.get("total_claimed", 0),
             "per_account": per_account,
             "session_claimed": self._session_claimed,
             "last_claim": last_claim,
             "history": history[-10:],
+            "recent_tasks": recent_tasks[-50:],
         }
 
     def _session_for(self, login_id: str) -> requests.Session | None:
@@ -198,7 +214,7 @@ class AutoClaimService:
             return
         try:
             client.assign_tasks(login_id, task_ids)
-            self._record_claim(login_id, task_ids)
+            self._record_claim(login_id, task_ids, tasks=claimable)
             self.logger.info(
                 "自动领取: 账号 %s 成功领取 %d 条任务（共 %d 条待领取）",
                 login_id, len(task_ids), len(pending),

@@ -7,7 +7,7 @@ body { margin: 0; }
 .topbar nav { display: flex; align-items: center; gap: 20px; }
 .inline-form { display: inline; margin: 0; }
 .link-button { border: 0; padding: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; }
-.container { max-width: 1280px; margin: 0 auto; padding: 28px; }
+.container { max-width: 1920px; margin: 0 auto; padding: 28px; }
 .card { padding: 22px; border: 1px solid #e5eaf0; border-radius: 10px; background: #fff; box-shadow: 0 2px 8px #1f29370b; }
 h1, h2 { margin-top: 0; }
 h1 { font-size: 25px; }
@@ -122,6 +122,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }.button-row { display: fle
 .stats-metric strong { display: block; margin-top: 4px; font-size: 22px; color: #1f2937; }
 .stats-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .stats-body h3 { margin: 0 0 8px; color: #475569; font-size: 13px; }
+.stats-tasks { margin-top: 16px; }
+.stats-tasks h3 { margin: 0 0 8px; color: #475569; font-size: 13px; }
+.stats-table-wrap { overflow-x: auto; }
+.tasks-table { min-width: 700px; }
 .stats-table { width: 100%; border-collapse: collapse; }
 .stats-table th, .stats-table td { padding: 7px 10px; border-bottom: 1px solid #edf2f7; text-align: left; }
 .stats-table th { color: #64748b; font-size: 11px; font-weight: 600; background: #f8fafc; }
@@ -133,4 +137,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }.button-row { display: fle
 @media (max-width: 760px) {
   .stats-overview { flex-direction: column; gap: 12px; }
   .stats-body { grid-template-columns: 1fr; }
+  .tasks-table { min-width: 0; }
 }
