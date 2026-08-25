@@ -151,7 +151,7 @@ class AutoClaimService:
             "session_claimed": self._session_claimed,
             "last_claim": last_claim,
             "history": history[-10:],
-            "recent_tasks": recent_tasks[-50:],
+            "recent_tasks": recent_tasks[-5:],
         }
 
     def _session_for(self, login_id: str) -> requests.Session | None:
