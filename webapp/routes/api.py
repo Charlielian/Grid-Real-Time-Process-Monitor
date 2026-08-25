@@ -30,6 +30,15 @@ def _error(error: str, message: str, status: int):
     return jsonify({"error": error, "message": message}), status
 
 
+def _claimable_tasks(pending: list[TodoTask], keywords: tuple[str, ...]) -> list[TodoTask]:
+    """返回标题命中任一目标关键词（默认阳江）的可领取任务。
+
+    领取链路（无论自动还是手动触发）统一以这里允许的任务为准，防止越权领取
+    与业务无关的任务。
+    """
+    return [task for task in pending if any(keyword in task.title for keyword in keywords)]
+
+
 def _row(order: WorkOrder) -> dict[str, Any]:
     return {
         "order_id": order.order_id,
@@ -134,6 +143,10 @@ def pending_tasks():
             return _error("invalid_filter", str(exc), 400)
         cities = filters["city"]
         items = _query_all_todo_tasks(client, request.web_user.login_id, assigned=False, config=config, cities=cities)
+        # 标题匹配目标关键词的任务才允许领取，其他仅展示。
+        keywords = config.target_title_keywords
+        claimable = _claimable_tasks(items, keywords)
+        claimable_ids = [task.task_id for task in claimable if task.task_id]
         start = (page - 1) * page_size
         return jsonify({
             "items": [_task_row(task) for task in items[start:start + page_size]],
@@ -141,6 +154,7 @@ def pending_tasks():
             "page": page,
             "page_size": page_size,
             "process_key": config.target_process_key,
+            "claimable_ids": claimable_ids,
         })
     except SessionExpired:
         return jsonify({"error": "session_expired", "message": "平台会话已失效"}), 401
@@ -160,11 +174,11 @@ def claim_pending_tasks():
         client = current_app.extensions["web_auth"].platform(request.web_auth_context)
         config = current_app.extensions["app_config"]
         pending = _query_all_todo_tasks(client, login_id, assigned=False, config=config)
-        # 自动领取只认配置的目标关键词（默认阳江）：标题匹配任一关键词才允许领取。
+        # 只允许领取标题匹配目标关键词的任务（默认阳江）。
         keywords = config.target_title_keywords
-        claimable = [task for task in pending if any(kw in task.title for kw in keywords)]
-        pending_by_id = {task.task_id: task for task in claimable}
-        missing = [task_id for task_id in task_ids if task_id not in pending_by_id]
+        claimable = _claimable_tasks(pending, keywords)
+        claimable_by_id = {task.task_id: task for task in claimable if task.task_id}
+        missing = [task_id for task_id in task_ids if task_id not in claimable_by_id]
         if missing:
             return jsonify({"error": "task_unavailable", "message": "部分任务已被领取或不可领取", "task_ids": missing}), 409
         client.assign_tasks(login_id, task_ids)
