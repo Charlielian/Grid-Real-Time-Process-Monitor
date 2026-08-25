@@ -15,9 +15,11 @@
   const message = document.querySelector('#pending-message');
   const refresh = document.querySelector('#pending-refresh');
   const claimAll = document.querySelector('#pending-claim-all');
-  if (!page || !rows || !message || !refresh || !claimAll) return;
+  const autoClaimToggle = document.querySelector('#pending-auto-claim-toggle');
+  if (!page || !rows || !message || !refresh || !claimAll || !autoClaimToggle) return;
 
-  const autoClaimEnabled = page.dataset.autoClaim === 'true';
+  let autoClaimEnabled = page.dataset.autoClaim === 'true';
+  let autoClaimTimer = null;
   const configuredPollInterval = Number(page.dataset.pollInterval);
   const pollInterval = (Number.isFinite(configuredPollInterval) && configuredPollInterval > 0
     ? Math.max(5, configuredPollInterval)
@@ -149,6 +151,40 @@
       message.textContent = error.message || '领取失败';
     }
   };
+  const startAutoClaim = () => {
+    if (autoClaimTimer) return;
+    autoClaimEnabled = true;
+    autoClaimPaused = false;
+    autoClaimFailures = 0;
+    autoClaimToggle.textContent = '停止自动领取';
+    autoClaimToggle.classList.add('active');
+    message.textContent = '自动领取已启动，每 60 秒轮询一次';
+    autoClaimTimer = setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        await load({automatic: true, allowAutoClaim: true});
+      } catch {
+        // individual load errors are handled inside load()
+      }
+    }, 60000);
+  };
+  const stopAutoClaim = () => {
+    if (autoClaimTimer) {
+      clearInterval(autoClaimTimer);
+      autoClaimTimer = null;
+    }
+    autoClaimEnabled = false;
+    autoClaimToggle.textContent = '启动自动领取';
+    autoClaimToggle.classList.remove('active');
+    message.textContent = '自动领取已停止';
+  };
+  const toggleAutoClaim = () => {
+    if (autoClaimTimer) {
+      stopAutoClaim();
+    } else {
+      startAutoClaim();
+    }
+  };
   const claimAllTasks = async () => {
     const ids = claimableIds;
     if (!ids.length) {
@@ -174,6 +210,7 @@
     schedule();
   });
   claimAll.addEventListener('click', claimAllTasks);
+  autoClaimToggle.addEventListener('click', toggleAutoClaim);
   rows.addEventListener('click', (event) => {
     const button = event.target.closest('.pending-claim');
     if (button && !button.disabled) claim(button);
@@ -191,6 +228,7 @@
   window.addEventListener('beforeunload', () => {
     clearTimeout(timer);
     controller?.abort();
+    stopAutoClaim();
   });
   load().finally(schedule);
 })();

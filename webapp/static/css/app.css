@@ -31,7 +31,7 @@ h2 { font-size: 17px; }
 label { display: block; margin: 14px 0; font-weight: 600; } label input { display: block; width: 100%; margin-top: 6px; }
 input, select { padding: 10px 11px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; font: inherit; }
 button, .button { display: inline-block; padding: 10px 15px; border: 0; border-radius: 6px; color: #fff; background: #2563a6; cursor: pointer; text-decoration: none; font: inherit; }.button:hover, button:hover { background: #1d4f86; }
-button:disabled { cursor: not-allowed; opacity: .55; }.button-row { display: flex; gap: 10px; }.captcha-row { display: flex; align-items: center; gap: 10px; }.captcha-row img { width: 150px; height: 48px; border: 1px solid #cbd5e1; object-fit: contain; }
+button:disabled { cursor: not-allowed; opacity: .55; }.button-row { display: flex; gap: 10px; }.button.active { background: #16a34a; }.button.active:hover { background: #15803d; }.captcha-row { display: flex; align-items: center; gap: 10px; }.captcha-row img { width: 150px; height: 48px; border: 1px solid #cbd5e1; object-fit: contain; }
   .login-card { max-width: 480px; margin: 45px auto; }.muted { color: #64748b; }.flash { margin-bottom: 16px; padding: 12px 14px; border-radius: 6px; }.flash.success { color: #166534; background: #dcfce7; }.flash.error { color: #991b1b; background: #fee2e2; }.secondary-button { margin-bottom: 8px; }
 
 .pending-table-wrap { min-height: 220px; }.pending-table { min-width: 900px; }.pending-table th { background: #f8fafc; }.pending-claim { padding: 7px 11px; font-size: 14px; }
