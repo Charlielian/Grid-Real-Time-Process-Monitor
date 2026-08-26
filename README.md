@@ -1,15 +1,15 @@
 # 网格实时流程监控
 
-面向“微网格实时优化流程”的单进程 Web 监控工具。应用负责登录上游平台、同步工单、查看统计信息、管理待领取任务，并将业务快照保存到 SQLite。
+面向”微网格实时优化流程”的单进程 Web 监控工具。应用负责登录上游平台、查看工单列表与详情、管理待领取任务，所有数据实时查询上游平台，本地不保留业务快照。
 
 ## 主要功能
 
 - CAS 登录、验证码校验、短信登录和登录会话恢复；
 - 使用操作系统凭据管理器保存上游 Cookies，不将 Cookies 写入项目文件；
-- 按 `config.yaml` 中的标题关键词筛选目标城市工单；
-- 工单分页同步、看板统计、工单详情和待领取任务管理；
-- SQLite 工单快照、事件和同步运行记录；
-- 后台数据库维护、保留周期和数据库大小监控；
+- 工单列表和待领取页面支持广东 21 个地市多选；城市按标题包含匹配，多城市为 OR，不选城市表示全部；
+- 工单按创建日期范围筛选、工单详情和待领取任务管理；
+- 后台自动领取符合标题关键词的待领取工单，独立于浏览器页面运行；
+- 待领取页面提供自动领取统计和最近 5 条领取工单明细；
 - Windows 单文件可执行程序构建和 GitHub Release 发布。
 
 ## 配置规则
@@ -17,20 +17,30 @@
 业务配置**只读取一个 `config.yaml` 文件**：
 
 - 源码运行：读取项目根目录的 `config.yaml`；
-- Windows 打包版：读取 `GridRealtimeMonitor.exe` 同目录的 `config.yaml`；
+- Windows 打包版：读取 `GridRealtimeMonitor.exe` 同目录的 `config.yaml`；该目录和文件必须允许当前用户写入，因为设置页会保存配置；
 - 不读取环境变量指定的配置文件；
 - 不读取 `settings.json`；
 - 不使用代码默认值补齐缺失字段；
 - 配置文件缺失、为空、格式错误、字段缺失、字段无效或包含未知字段时，应用拒绝启动。
 
-当前示例配置只包含“XXX”： 地市
+当前示例配置只包含流程识别字段：
 
 ```yaml
-target_title_keywords:
-  - 阳江
+target_process_title: 微网格实时优化流程
+target_process_key: proc_wwg_ssyhlc
 ```
 
-`config.yaml` 必须包含完整字段。修改配置后需要重启应用。历史数据库中的其他城市记录不会被删除，但在当前关键词范围下不会通过页面或 API 返回。
+地市和创建日期筛选在工单列表、待领取页面中选择。地市按工单标题包含匹配，多城市之间是 OR；不选择地市表示显示全部。创建日期起止均为包含当天的日期范围。旧版本中的 `target_title_keyword`/`target_title_keywords` 只为兼容读取，保存设置时会移除，不再作为固定业务过滤条件。
+
+`config.yaml` 必须包含其余完整字段。自动领取相关配置如下：
+
+```yaml
+auto_claim_pending_tasks: true
+# 后端自动领取轮询间隔（秒）
+auto_claim_interval_seconds: 60
+```
+
+`auto_claim_pending_tasks` 开启后，后端服务启动时立即执行首轮扫描，之后按配置间隔持续扫描；服务不依赖待领取页面是否打开。默认只领取标题包含 `target_title_keywords`（默认 `阳江`）的任务。也可以在“设置”页面修改开关和轮询间隔，保存后立即生效。
 
 ## 源码运行
 
@@ -54,7 +64,7 @@ python -m pytest
 python run.py
 ```
 
-开发服务器默认监听 `config.yaml` 中的 `web_host` 和 `web_port`。生产环境不要使用 Flask 开发服务器，应使用单进程、单 worker 的 Waitress、Gunicorn 或 uWSGI。详细说明见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
+生产环境由 EXE 内置的 Waitress 单进程 WSGI 服务提供，不使用 Flask 开发服务器，因此不会出现开发服务器警告。源码运行时同样使用 Waitress；默认监听 `config.yaml` 中的 `web_host` 和 `web_port`。详细说明见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
 
 ## 数据和登录会话位置
 
@@ -66,13 +76,16 @@ python run.py
 目录中可能包含：
 
 ```text
-monitor.sqlite3
 app.log
 .secret_key
+auto_claim_stats.json
 ```
+
+`app.log` 会记录服务启动、自动领取每轮扫描、账号扫描结果、领取成功或失败等运行状态。自动领取统计保存在 `auto_claim_stats.json`，包括累计数量、各账号汇总、历史记录和最近领取工单明细；页面最多显示最近 5 条明细。
+
 登录 Cookies 不保存在上述目录，而是保存到当前用户的操作系统凭据管理器中。删除保存账号时，程序会删除对应的凭据。
 
-如需指定运行数据目录，可设置 `GRID_MONITOR_DATA_DIR`；该变量只影响数据库、日志和密钥等运行数据位置，不影响业务配置来源。
+如需指定运行数据目录，可设置 `GRID_MONITOR_DATA_DIR`；该变量只影响日志和密钥等运行数据位置，不影响业务配置来源。
 
 ## Windows 打包和下载
 
@@ -94,7 +107,7 @@ GridRealtimeMonitor-windows/
 └── DEPLOYMENT.md
 ```
 
-`config.yaml` 不会内嵌到 exe，必须与 exe 放在同一目录。数据库、日志、Cookies、`.secret_key` 和其他本机运行数据不会被打包。
+`config.yaml` 不会内嵌到 exe，必须与 exe 放在同一目录。日志、Cookies、`.secret_key` 和其他本机运行数据不会被打包。配置保存需要替换同目录文件，因此不要直接从 `Program Files`、受控文件夹或其他无写权限目录运行；建议解压到当前用户可写目录。如果保存失败，请检查目录/文件权限，并关闭可能占用 `config.yaml` 的编辑器、同步软件或安全软件。
 
 推送 `v*` 格式的 tag（例如 `v0.1.0`）后，工作流会自动构建 Windows 包并上传到对应的 GitHub Release：
 
@@ -117,7 +130,7 @@ Get-Content .\GridRealtimeMonitor-windows.zip.sha256
 ## 项目结构
 
 ```text
-backend/       上游认证、平台客户端、同步和数据库层
+backend/       上游认证、平台客户端
 shared/        配置、模型和通用工具
 webapp/        Flask 应用、路由、模板和前端资源
 tests/         自动化测试
