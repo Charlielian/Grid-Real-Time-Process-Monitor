@@ -8,6 +8,8 @@
 - 使用操作系统凭据管理器保存上游 Cookies，不将 Cookies 写入项目文件；
 - 工单列表和待领取页面支持广东 21 个地市多选；城市按标题包含匹配，多城市为 OR，不选城市表示全部；
 - 工单按创建日期范围筛选、工单详情和待领取任务管理；
+- 后台自动领取符合标题关键词的待领取工单，独立于浏览器页面运行；
+- 待领取页面提供自动领取统计和最近 5 条领取工单明细；
 - Windows 单文件可执行程序构建和 GitHub Release 发布。
 
 ## 配置规则
@@ -30,7 +32,15 @@ target_process_key: proc_wwg_ssyhlc
 
 地市和创建日期筛选在工单列表、待领取页面中选择。地市按工单标题包含匹配，多城市之间是 OR；不选择地市表示显示全部。创建日期起止均为包含当天的日期范围。旧版本中的 `target_title_keyword`/`target_title_keywords` 只为兼容读取，保存设置时会移除，不再作为固定业务过滤条件。
 
-`config.yaml` 必须包含其余完整字段。修改配置后需要重启应用；历史数据库记录不会因筛选条件改变而删除。
+`config.yaml` 必须包含其余完整字段。自动领取相关配置如下：
+
+```yaml
+auto_claim_pending_tasks: true
+# 后端自动领取轮询间隔（秒）
+auto_claim_interval_seconds: 60
+```
+
+`auto_claim_pending_tasks` 开启后，后端服务启动时立即执行首轮扫描，之后按配置间隔持续扫描；服务不依赖待领取页面是否打开。默认只领取标题包含 `target_title_keywords`（默认 `阳江`）的任务。也可以在“设置”页面修改开关和轮询间隔，保存后立即生效。
 
 ## 源码运行
 
@@ -54,7 +64,7 @@ python -m pytest
 python run.py
 ```
 
-开发服务器默认监听 `config.yaml` 中的 `web_host` 和 `web_port`。生产环境不要使用 Flask 开发服务器，应使用单进程、单 worker 的 Waitress、Gunicorn 或 uWSGI。详细说明见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
+生产环境由 EXE 内置的 Waitress 单进程 WSGI 服务提供，不使用 Flask 开发服务器，因此不会出现开发服务器警告。源码运行时同样使用 Waitress；默认监听 `config.yaml` 中的 `web_host` 和 `web_port`。详细说明见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
 
 ## 数据和登录会话位置
 
@@ -68,7 +78,11 @@ python run.py
 ```text
 app.log
 .secret_key
+auto_claim_stats.json
 ```
+
+`app.log` 会记录服务启动、自动领取每轮扫描、账号扫描结果、领取成功或失败等运行状态。自动领取统计保存在 `auto_claim_stats.json`，包括累计数量、各账号汇总、历史记录和最近领取工单明细；页面最多显示最近 5 条明细。
+
 登录 Cookies 不保存在上述目录，而是保存到当前用户的操作系统凭据管理器中。删除保存账号时，程序会删除对应的凭据。
 
 如需指定运行数据目录，可设置 `GRID_MONITOR_DATA_DIR`；该变量只影响日志和密钥等运行数据位置，不影响业务配置来源。
