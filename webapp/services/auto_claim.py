@@ -170,22 +170,35 @@ class AutoClaimService:
     def _run_cycle(self) -> None:
         """单次轮询：遍历所有已保存账号，领取可领取任务。"""
         if not self.config.auto_claim_pending_tasks:
+            self.logger.info("自动领取: 服务未启用，跳过本轮扫描")
             return
+        cycle_started = datetime.now()
+        self.logger.info("自动领取: 开始扫描")
         try:
             accounts = self.accounts.list()
         except Exception:
             self.logger.exception("自动领取: 读取保存账号失败")
             return
+        scanned = 0
+        skipped = 0
         for account in accounts:
             if self._stop.is_set():
                 return
             login_id = str(account["login_id"])
             if account.get("heartbeat_status") == "expired":
+                skipped += 1
+                self.logger.info("自动领取: 账号 %s 会话已过期，跳过扫描", login_id)
                 continue
+            scanned += 1
             try:
                 self._claim_for_account(login_id)
             except Exception as exc:
                 self.logger.warning("自动领取: 账号 %s 异常: %s", login_id, exc)
+        elapsed = (datetime.now() - cycle_started).total_seconds()
+        self.logger.info(
+            "自动领取: 扫描完成，账号总数=%d，实际扫描=%d，跳过=%d，耗时=%.1f秒",
+            len(accounts), scanned, skipped, elapsed,
+        )
 
     def _claim_for_account(self, login_id: str) -> None:
         """为单个账号执行一次完整的查询+领取流程。"""
@@ -207,6 +220,10 @@ class AutoClaimService:
         client = PlatformClient(self.config, session, self.logger)
         pending = query_all_todo_tasks(client, login_id, assigned=False, config=self.config)
         claimable = claimable_tasks(pending, self.config.target_title_keywords)
+        self.logger.info(
+            "自动领取: 账号 %s 扫描完成，待领取=%d，可领取=%d",
+            login_id, len(pending), len(claimable),
+        )
         if not claimable:
             return
         task_ids = [task.task_id for task in claimable if task.task_id]
@@ -225,8 +242,9 @@ class AutoClaimService:
             self.logger.warning("自动领取: 账号 %s 领取失败: %s", login_id, exc)
 
     def _run(self) -> None:
-        """后台线程主循环。"""
+        """后台线程主循环；启动后立即执行首轮扫描。"""
         try:
+            self._run_cycle()
             while not self._stop.wait(self.interval_seconds):
                 self._run_cycle()
         finally:

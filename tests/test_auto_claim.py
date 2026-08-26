@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
 
 import pytest
 
@@ -239,6 +241,40 @@ def test_auto_claim_stats_file_unwritable_still_works(monkeypatch, tmp_path) -> 
     service._claim_for_account("account-1")
 
     assert service.stats()["total_claimed"] == 1
+
+
+def test_auto_claim_cycle_logs_scan_results(monkeypatch, caplog) -> None:
+    service, _fake_cas, _fake_platform = _make_service(
+        monkeypatch,
+        pending=[_task("t1", "广州 A")],
+    )
+
+    with caplog.at_level(logging.INFO, logger=service.logger.name):
+        service._run_cycle()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("开始扫描" in message for message in messages)
+    assert any("账号 account-1 扫描完成，待领取=1，可领取=0" in message for message in messages)
+    assert any("扫描完成，账号总数=1，实际扫描=1，跳过=0" in message for message in messages)
+
+
+def test_auto_claim_start_scans_immediately(monkeypatch) -> None:
+    service = AutoClaimService(AppConfig(auto_claim_pending_tasks=True), interval_seconds=3600)
+    first_cycle = threading.Event()
+    cycle_count = 0
+
+    def fake_cycle() -> None:
+        nonlocal cycle_count
+        cycle_count += 1
+        first_cycle.set()
+
+    monkeypatch.setattr(service, "_run_cycle", fake_cycle)
+    service.start()
+    try:
+        assert first_cycle.wait(timeout=1), "自动领取服务启动后未立即扫描"
+        assert cycle_count == 1
+    finally:
+        service.shutdown()
 
 
 def test_auto_claim_shutdown_is_idempotent() -> None:
