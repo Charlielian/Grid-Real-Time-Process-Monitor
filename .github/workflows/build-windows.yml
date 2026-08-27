@@ -52,10 +52,18 @@ jobs:
         shell: pwsh
         run: |
           $package = "dist/GridRealtimeMonitor-windows"
-          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          $data = "$package/data"
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
           Copy-Item "dist/GridRealtimeMonitor.exe" "$package/GridRealtimeMonitor.exe"
           Copy-Item "config.yaml" "$package/config.yaml"
           Copy-Item "DEPLOYMENT.md" "$package/DEPLOYMENT.md"
+          @"
+          此目录用于保存程序运行时数据。程序首次启动时会自动创建数据库、日志、密钥和自动领取统计文件。
+          请勿将真实运行数据、Cookies 或密钥复制到发布包中。
+          "@ | Set-Content "$data/README.txt" -Encoding UTF8
+          if (-not (Test-Path "$data/README.txt")) {
+            throw "Release data directory placeholder was not created"
+          }
           $archive = "dist/GridRealtimeMonitor-windows.zip"
           Compress-Archive -Path "$package/*" -DestinationPath $archive -Force
           (Get-FileHash $archive -Algorithm SHA256).Hash | Set-Content "${archive}.sha256"

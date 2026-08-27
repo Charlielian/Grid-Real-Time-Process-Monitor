@@ -60,7 +60,7 @@ GitHub Actions 会在 `main`/`master` 的推送、Pull Request 和手动触发�
 - `GridRealtimeMonitor-windows-executable`：仅包含 `GridRealtimeMonitor.exe`；
 - `GridRealtimeMonitor-windows-package`：包含 exe、`config.yaml`、本部署说明和 SHA-256 校验文件的 ZIP 包。
 
-创建并推送 `v*` 格式的版本 tag（例如 `v0.1.0`）后，工作流会构建并将 ZIP 包及其 `.sha256` 校验文件上传到对应的 GitHub Release；如果 Release 尚不存在，工作流会自动创建并生成发布说明。下载 ZIP 后解压到独立目录，确保 `GridRealtimeMonitor.exe` 与 `config.yaml` 位于同一目录，再启动程序。设置页保存配置需要该目录和 `config.yaml` 对当前用户可写；不要直接放在 `Program Files`、受控文件夹或其他只读目录中，建议解压到用户有 Modify 权限的目录。若出现配置写入失败，请检查目录和文件权限，并关闭可能锁定 `config.yaml` 的编辑器、云同步软件或安全软件。不要把日志、Cookies 或其他运行数据放进发布包。
+创建并推送 `v*` 格式的版本 tag（例如 `v0.1.0`）后，工作流会构建并将 ZIP 包及其 `.sha256` 校验文件上传到对应的 GitHub Release；如果 Release 尚不存在，工作流会自动创建并生成发布说明。下载 ZIP 后解压到独立目录，确保 `GridRealtimeMonitor.exe` 与 `config.yaml` 位于同一目录。ZIP 中的 `data/README.txt` 只是目录占位说明，程序首次启动时会在 EXE 同目录下的 `data/` 中自动创建数据库、日志、`.secret_key` 和自动领取统计等本机运行数据。设置页保存配置需要该目录和 `config.yaml` 对当前用户可写；不要直接放在 `Program Files`、受控文件夹或其他只读目录中，建议解压到用户有 Modify 权限的目录。若出现配置写入失败，请检查目录和文件权限，并关闭可能锁定 `config.yaml` 的编辑器、云同步软件或安全软件。不要把真实数据库、日志、Cookies、密钥或其他运行数据放进发布包。
 
 macOS/Linux 可使用源码方式运行；当前 GitHub Actions 仅生成 Windows 可执行文件。
 

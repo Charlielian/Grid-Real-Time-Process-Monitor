@@ -71,17 +71,18 @@ python run.py
 默认运行数据目录：
 
 - 源码运行：项目根目录下的 `data/`；
-- Windows 打包版：`%LOCALAPPDATA%\GridRealtimeMonitor\`。
+- Windows 打包版：EXE 同目录下的 `data/`。
 
 目录中可能包含：
 
 ```text
+monitor.sqlite3
 app.log
 .secret_key
 auto_claim_stats.json
 ```
 
-`app.log` 会记录服务启动、自动领取每轮扫描、账号扫描结果、领取成功或失败等运行状态。自动领取统计保存在 `auto_claim_stats.json`，包括累计数量、各账号汇总、历史记录和最近领取工单明细；页面最多显示最近 5 条明细。
+`app.log` 会记录服务启动、自动领取每轮扫描、账号扫描结果、领取成功或失败等运行状态。自动领取统计保存在 `auto_claim_stats.json`，包括累计数量、各账号汇总、历史记录和最近领取工单明细；页面最多显示最近 5 条明细。发布 ZIP 中的 `data/README.txt` 只是目录占位说明，真实运行文件会在首次启动后生成。
 
 登录 Cookies 不保存在上述目录，而是保存到当前用户的操作系统凭据管理器中。删除保存账号时，程序会删除对应的凭据。
 
@@ -94,7 +95,7 @@ GitHub Actions 工作流位于 `.github/workflows/build-windows.yml`，会：
 1. 安装依赖并运行完整测试；
 2. 使用 PyInstaller 构建 `GridRealtimeMonitor.exe`；
 3. 将 `webapp/templates` 和 `webapp/static` 内嵌到可执行文件；
-4. 将外部 `config.yaml`、`DEPLOYMENT.md` 和 exe 组成 ZIP；
+4. 将外部 `config.yaml`、`DEPLOYMENT.md`、`data/README.txt` 和 exe 组成 ZIP；
 5. 生成 ZIP 的 SHA-256 校验文件；
 6. 上传 Actions Artifact。
 
@@ -104,10 +105,12 @@ GitHub Actions 工作流位于 `.github/workflows/build-windows.yml`，会：
 GridRealtimeMonitor-windows/
 ├── GridRealtimeMonitor.exe
 ├── config.yaml
-└── DEPLOYMENT.md
+├── DEPLOYMENT.md
+└── data/
+    └── README.txt
 ```
 
-`config.yaml` 不会内嵌到 exe，必须与 exe 放在同一目录。日志、Cookies、`.secret_key` 和其他本机运行数据不会被打包。配置保存需要替换同目录文件，因此不要直接从 `Program Files`、受控文件夹或其他无写权限目录运行；建议解压到当前用户可写目录。如果保存失败，请检查目录/文件权限，并关闭可能占用 `config.yaml` 的编辑器、同步软件或安全软件。
+`config.yaml` 不会内嵌到 exe，必须与 exe 放在同一目录。`data/README.txt` 只是目录占位说明；程序运行后会在 `data/` 中创建数据库、日志、`.secret_key` 和自动领取统计等本机数据。真实本机数据、Cookies 和密钥不会被打包。配置保存需要替换同目录文件，因此不要直接从 `Program Files`、受控文件夹或其他无写权限目录运行；建议解压到当前用户可写目录。如果保存失败，请检查目录/文件权限，并关闭可能占用 `config.yaml` 的编辑器、同步软件或安全软件。
 
 推送 `v*` 格式的 tag（例如 `v0.1.0`）后，工作流会自动构建 Windows 包并上传到对应的 GitHub Release：
 

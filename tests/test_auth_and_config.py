@@ -146,6 +146,31 @@ def test_config_store_save_cleans_temp_file_on_replace_failure(tmp_path, monkeyp
     assert not list(tmp_path.glob(".*.config.yaml.*.tmp"))
 
 
+def test_app_paths_frozen_defaults_to_executable_data_dir(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "GridRealtimeMonitor.exe"
+    executable.touch()
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", str(executable))
+    monkeypatch.delenv("GRID_MONITOR_DATA_DIR", raising=False)
+
+    paths = AppPaths()
+
+    assert paths.root == tmp_path / "data"
+    assert paths.root.is_dir()
+
+
+def test_app_paths_data_dir_can_be_overridden_in_frozen_mode(tmp_path, monkeypatch) -> None:
+    override = tmp_path / "custom-data"
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", str(tmp_path / "GridRealtimeMonitor.exe"))
+    monkeypatch.setenv("GRID_MONITOR_DATA_DIR", str(override))
+
+    paths = AppPaths()
+
+    assert paths.root == override
+    assert paths.root.is_dir()
+
+
 def test_app_config_rejects_invalid_deployment_values() -> None:
     with pytest.raises(ValueError):
         AppConfig(web_port=0)
@@ -155,6 +180,13 @@ def test_app_config_rejects_invalid_deployment_values() -> None:
         AppConfig(target_title_keywords=("",))
     with pytest.raises(ValueError):
         AppConfig(target_process_key=" ")
+
+
+def test_windows_workflow_packages_data_placeholder() -> None:
+    workflow = (__import__("pathlib").Path(__file__).parents[1] / ".github/workflows/build-windows.yml").read_text(encoding="utf-8")
+    assert '"$package/data"' in workflow
+    assert 'Set-Content "$data/README.txt"' in workflow
+    assert 'Copy-Item "data"' not in workflow
 
 
 def test_rsa_pkcs1_encrypts_with_real_key() -> None:
