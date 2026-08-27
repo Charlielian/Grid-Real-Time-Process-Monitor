@@ -13,6 +13,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from backend.auth.cas_client import SessionExpired
 from backend.platform.client import PlatformBusinessError, PlatformError
+from backend.platform.user_info_client import UserInfoClient
 from shared.config import config_to_dict, with_config_updates
 from shared.filters import parse_order_filters
 from shared.models import TodoTask, WorkOrder
@@ -48,7 +49,7 @@ def _row(order: WorkOrder) -> dict[str, Any]:
     }
 
 
-def _task_row(task: TodoTask) -> dict[str, Any]:
+def _task_row(task: TodoTask, cities: tuple[str, ...]) -> dict[str, Any]:
     return {
         "task_id": task.task_id,
         "order_id": task.order_id,
@@ -60,6 +61,7 @@ def _task_row(task: TodoTask) -> dict[str, Any]:
         "process_definition_key": task.process_definition_key,
         "created_at": task.created_at,
         "due_at": task.due_at,
+        "claimable": bool(cities and any(city in task.title for city in cities)),
     }
 
 
@@ -108,17 +110,17 @@ def pending_tasks():
             return _error("invalid_filter", str(exc), 400)
         cities = filters["city"]
         items = _query_all_todo_tasks(client, request.web_user.login_id, assigned=False, config=config, cities=cities)
-        # 标题匹配目标关键词的任务才允许领取，其他仅展示。
-        keywords = config.target_title_keywords
-        claimable = claimable_tasks(items, keywords)
+        account_cities = UserInfoClient(config, request.web_auth_context.session, _logger()).get_cities(request.web_user.login_id)
+        claimable = claimable_tasks(items, account_cities)
         claimable_ids = [task.task_id for task in claimable if task.task_id]
         start = (page - 1) * page_size
         return jsonify({
-            "items": [_task_row(task) for task in items[start:start + page_size]],
+            "items": [_task_row(task, account_cities) for task in items[start:start + page_size]],
             "total": len(items),
             "page": page,
             "page_size": page_size,
             "process_key": config.target_process_key,
+            "account_cities": list(account_cities),
             "claimable_ids": claimable_ids,
         })
     except SessionExpired:
@@ -139,9 +141,8 @@ def claim_pending_tasks():
         client = current_app.extensions["web_auth"].platform(request.web_auth_context)
         config = current_app.extensions["app_config"]
         pending = _query_all_todo_tasks(client, login_id, assigned=False, config=config)
-        # 只允许领取标题匹配目标关键词的任务（默认阳江）。
-        keywords = config.target_title_keywords
-        claimable = claimable_tasks(pending, keywords)
+        account_cities = UserInfoClient(config, request.web_auth_context.session, _logger()).get_cities(login_id)
+        claimable = claimable_tasks(pending, account_cities)
         claimable_by_id = {task.task_id: task for task in claimable if task.task_id}
         missing = [task_id for task_id in task_ids if task_id not in claimable_by_id]
         if missing:

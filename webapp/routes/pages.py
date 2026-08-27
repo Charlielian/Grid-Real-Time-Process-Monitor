@@ -59,7 +59,6 @@ def pending_tasks() -> str:
         poll_interval_seconds=config.poll_interval_seconds,
         page_size=config.page_size,
         auto_claim_pending_tasks=config.auto_claim_pending_tasks,
-        claim_keywords=config.target_title_keywords,
         cities=GUANGDONG_CITIES,
         selected_cities=selected_cities,
     )

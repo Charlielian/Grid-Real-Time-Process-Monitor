@@ -57,9 +57,9 @@ def test_query_all_todo_tasks_filters_cities() -> None:
     assert [task.task_id for task in result] == ["t1"]
 
 
-def test_claimable_tasks_only_matches_keywords() -> None:
-    pending = [_task("t1", "阳江 A"), _task("t2", "广州 B"), _task("t3", "阳江优化")]
-    result = claimable_tasks(pending, ("阳江",))
+def test_claimable_tasks_only_matches_account_cities() -> None:
+    pending = [_task("t1", "佛山 A"), _task("t2", "广州 B"), _task("t3", "佛山优化")]
+    result = claimable_tasks(pending, ("佛山",))
     assert [task.task_id for task in result] == ["t1", "t3"]
     assert claimable_tasks(pending, ()) == []
 
@@ -90,6 +90,14 @@ class _FakeCasClient:
     def check_session(self, expected_login_id: str | None = None) -> object:
         self.checked.append(expected_login_id or "")
         return object()
+
+
+class _FakeUserInfoClient:
+    def __init__(self, config, session, logger):
+        pass
+
+    def get_cities(self, login_id: str) -> tuple[str, ...]:
+        return ("佛山",)
 
 
 class _FakePlatformClient:
@@ -129,6 +137,7 @@ def _make_service(monkeypatch, *, enabled: bool = True, pending: list[TodoTask] 
 
     monkeypatch.setattr("webapp.services.auto_claim.SessionFactory", _FakeSessionFactory)
     monkeypatch.setattr("webapp.services.auto_claim.CasClient", lambda config, session, logger: fake_cas)
+    monkeypatch.setattr("webapp.services.auto_claim.UserInfoClient", _FakeUserInfoClient)
 
     class _FakePlatformClientFactory:
         instance = fake_platform
@@ -140,14 +149,14 @@ def _make_service(monkeypatch, *, enabled: bool = True, pending: list[TodoTask] 
     return service, fake_cas, fake_platform
 
 
-def test_auto_claim_claims_only_keyword_tasks(monkeypatch) -> None:
-    pending = [_task("t1", "阳江 A"), _task("t2", "广州 B"), _task("t3", "阳江优化")]
+def test_auto_claim_claims_only_account_city_tasks(monkeypatch) -> None:
+    pending = [_task("t1", "佛山 A"), _task("t2", "广州 B"), _task("t3", "佛山优化")]
     service, fake_cas, fake_platform = _make_service(monkeypatch, pending=pending)
 
     service._claim_for_account("account-1")
 
     assert fake_cas.checked == ["account-1"]
-    # 只领取标题含“阳江”的任务
+    # 只领取标题含账号归属地市“佛山”的任务
     assert fake_platform.assign_calls == [("account-1", ["t1", "t3"])]
 
 
@@ -176,7 +185,7 @@ def test_auto_claim_disabled_does_nothing(monkeypatch) -> None:
 
 
 def test_auto_claim_records_statistics(monkeypatch, tmp_path) -> None:
-    pending = [_task("t1", "阳江 A"), _task("t2", "广州 B"), _task("t3", "阳江优化")]
+    pending = [_task("t1", "佛山 A"), _task("t2", "广州 B"), _task("t3", "佛山优化")]
     service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)
 
     service._claim_for_account("account-1")
@@ -214,15 +223,15 @@ def test_auto_claim_stats_survives_restart(tmp_path) -> None:
 
 
 def test_auto_claim_records_claimed_task_details(monkeypatch, tmp_path) -> None:
-    pending = [_task("t1", "阳江 A"), _task("t2", "广州 B")]
+    pending = [_task("t1", "佛山 A"), _task("t2", "广州 B")]
     service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)
 
     service._claim_for_account("account-1")
 
     stats = service.stats()
-    # 明细只记录实际领取的（标题含关键词）任务
+    # 明细只记录实际领取的（标题含账号归属地市）任务
     assert [t["number"] for t in stats["recent_tasks"]] == ["t1"]
-    assert [t["title"] for t in stats["recent_tasks"]] == ["阳江 A"]
+    assert [t["title"] for t in stats["recent_tasks"]] == ["佛山 A"]
     assert stats["recent_tasks"][0]["login_id"] == "account-1"
 
     saved = json.loads((tmp_path / "auto_claim_stats.json").read_text(encoding="utf-8"))
@@ -231,7 +240,7 @@ def test_auto_claim_records_claimed_task_details(monkeypatch, tmp_path) -> None:
 
 
 def test_auto_claim_stats_file_unwritable_still_works(monkeypatch, tmp_path) -> None:
-    pending = [_task("t1", "阳江 A")]
+    pending = [_task("t1", "佛山 A")]
     service, _fake_cas, _fake_platform = _make_service(monkeypatch, pending=pending, data_dir=tmp_path)
 
     def fail_write(_text, *args, **kwargs):

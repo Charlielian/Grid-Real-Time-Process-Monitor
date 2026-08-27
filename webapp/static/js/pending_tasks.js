@@ -5,9 +5,8 @@
  * 不会阻止列表继续刷新。渲染使用 DOM API/textContent，避免把上游标题直接拼接
  * 到 HTML；页面隐藏时取消请求，恢复可见后再补偿加载当前 URL 的筛选结果。
  *
- * 领取权限由后端统一控制：只有标题匹配 target_title_keywords（默认阳江）的
- * 任务才可以领取，API 返回的 claimable_ids 字段标明哪些允许领取。自动领取、
- * 一键领取和单个领取按钮都受此约束。
+ * 领取权限由后端统一控制：只有标题匹配当前账号归属地市的任务才可以领取，
+ * API 返回的 claimable_ids 字段标明哪些允许领取。自动领取、一键领取和单个领取按钮都受此约束。
  */
 (() => {
   const page = document.querySelector('.pending-page');
@@ -155,7 +154,7 @@
     if (!items?.length) {
       const empty = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       cell.className = 'muted';
       cell.textContent = '暂无待领取任务';
       empty.append(cell);
@@ -171,6 +170,10 @@
         cell.textContent = value || '';
         row.append(cell);
       }
+      const statusCell = document.createElement('td');
+      statusCell.textContent = claimable ? '可领取' : '不可领取';
+      statusCell.className = claimable ? 'claimable-status' : 'unclaimable-status';
+      row.append(statusCell);
       const actionCell = document.createElement('td');
       const button = document.createElement('button');
       button.type = 'button';
@@ -206,7 +209,8 @@
       claimableIds = result.claimable_ids || [];
       render(result.items || []);
       const claimableCount = claimableIds.length;
-      message.textContent = `共 ${Number(result.total || 0)} 条待领取任务（其中 ${claimableCount} 条可领取）`;
+      const cities = (result.account_cities || []).join('、') || '未获取';
+      message.textContent = `当前账号归属地市：${cities}；共 ${Number(result.total || 0)} 条待领取工单，其中 ${claimableCount} 条可领取`;
       const claimableItems = (result.items || []).filter((t) => claimableIds.includes(t.task_id));
       if (autoClaimEnabled && allowAutoClaim && !autoClaimPaused && claimableItems.length) {
         message.textContent = `自动领取 ${claimableItems.length} 条任务…`;

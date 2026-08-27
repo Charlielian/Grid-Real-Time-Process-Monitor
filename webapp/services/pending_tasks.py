@@ -58,10 +58,6 @@ def query_all_todo_tasks(
     return tasks
 
 
-def claimable_tasks(pending: list[TodoTask], keywords: tuple[str, ...]) -> list[TodoTask]:
-    """返回标题命中任一目标关键词（默认阳江）的可领取任务。
-
-    领取链路（无论自动还是手动触发）统一以这里允许的任务为准，防止越权领取
-    与业务无关的任务。
-    """
-    return [task for task in pending if any(keyword in task.title for keyword in keywords)]
+def claimable_tasks(pending: list[TodoTask], cities: tuple[str, ...]) -> list[TodoTask]:
+    """返回标题包含账号归属地市的可领取任务。"""
+    return [task for task in pending if cities and any(city in task.title for city in cities)]

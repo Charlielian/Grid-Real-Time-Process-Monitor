@@ -6,10 +6,10 @@
   <div class="page-header">
     <div>
       <h1>待领取任务</h1>
-      <span class="muted">仅标题含关键词（默认阳江）的任务可领取；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
+      <span class="muted">仅账号归属地市相关工单可领取；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
     </div>
     <button type="button" class="button" id="pending-refresh">刷新</button>
-    <button type="button" class="button" id="pending-claim-all">一键领取（仅阳江）</button>
+    <button type="button" class="button" id="pending-claim-all">一键领取相关地市工单</button>
     <button type="button" class="button" id="pending-auto-claim-toggle">启动自动领取</button>
   </div>
   <section class="card stats-panel" id="auto-claim-stats-panel" hidden>
@@ -46,8 +46,8 @@
   <div id="pending-message" class="muted" role="status"></div>
   <noscript>人工领取</noscript>
   <section class="card table-wrap pending-table-wrap">
-    <table class="pending-table"><thead><tr><th>编号</th><th>标题</th><th>当前节点</th><th>创建时间</th><th>到期时间</th><th>操作</th></tr></thead>
-    <tbody id="pending-rows"><tr><td colspan="6" class="muted">正在加载…</td></tr></tbody></table>
+    <table class="pending-table"><thead><tr><th>编号</th><th>标题</th><th>当前节点</th><th>创建时间</th><th>到期时间</th><th>领取状态</th><th>操作</th></tr></thead>
+    <tbody id="pending-rows"><tr><td colspan="7" class="muted">正在加载…</td></tr></tbody></table>
   </section>
 </div>
 {% endblock %}

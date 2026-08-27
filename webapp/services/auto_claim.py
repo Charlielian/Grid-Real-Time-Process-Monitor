@@ -1,8 +1,7 @@
 """后台自动领取服务，独立于浏览器页面运行。
 
 使用已保存的 keyring Cookie 为每个账号创建会话，按固定间隔轮询上游待领取
-任务，仅领取标题匹配 target_title_keywords（默认阳江）的任务。该服务进
-程启动即运行，页面关闭不影响其执行。每次领取成功后记录统计到 JSON 文件，
+任务，仅领取标题匹配账号归属地市的任务。该服务进程启动即运行，页面关闭不影响其执行。
 支持 API 查询统计信息。
 """
 
@@ -19,6 +18,7 @@ import requests
 
 from backend.auth.cas_client import CasClient, SessionExpired, SessionFactory
 from backend.platform.client import PlatformBusinessError, PlatformClient, PlatformError
+from backend.platform.user_info_client import UserInfoClient
 from shared.config import AppConfig
 from shared.models import TodoTask
 from webapp.services.auth import AccountIndexStore, PersistentCookieStore
@@ -217,9 +217,14 @@ class AutoClaimService:
             self.logger.warning("自动领取: 账号 %s 网络不可用，跳过本次", login_id)
             return
 
+        try:
+            account_cities = UserInfoClient(self.config, session, self.logger).get_cities(login_id)
+        except (PlatformError, SessionExpired, ValueError) as exc:
+            self.logger.warning("自动领取: 账号 %s 无法获取归属地市，跳过本次: %s", login_id, type(exc).__name__)
+            return
         client = PlatformClient(self.config, session, self.logger)
         pending = query_all_todo_tasks(client, login_id, assigned=False, config=self.config)
-        claimable = claimable_tasks(pending, self.config.target_title_keywords)
+        claimable = claimable_tasks(pending, account_cities)
         self.logger.info(
             "自动领取: 账号 %s 扫描完成，待领取=%d，可领取=%d",
             login_id, len(pending), len(claimable),
