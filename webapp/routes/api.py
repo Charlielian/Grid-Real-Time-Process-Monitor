@@ -155,6 +155,7 @@ def claim_pending_tasks():
         }
         if any(task_id not in assigned_ids for task_id in task_ids):
             return jsonify({"error": "claim_unconfirmed", "message": "领取结果未确认，请刷新后重试"}), 409
+        _logger().info("页面领取: 账号 %s 成功领取 %d 条任务", login_id, len(task_ids))
         return jsonify({"message": "领取成功", "task_ids": task_ids, "assignee": login_id})
     except SessionExpired:
         return jsonify({"error": "session_expired", "message": "平台会话已失效"}), 401
