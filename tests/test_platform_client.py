@@ -1,3 +1,9 @@
+"""平台 HTTP 客户端的响应解析和错误分类测试。
+
+FakeResponse 避免真实网络请求，重点验证登录页与普通 HTML、业务错误、HTTP
+错误及平台返回字段之间的边界，保证网络故障不会误报为认证失效。
+"""
+
 from __future__ import annotations
 
 import logging
@@ -14,6 +20,7 @@ class FakeResponse:
         self.status_code = status_code
         self.headers = {"content-type": content_type}
         self.url = url
+        self.text = payload if isinstance(payload, str) else ""
 
     def json(self):
         if isinstance(self.payload, Exception):
@@ -41,7 +48,19 @@ def make_client(response):
     return PlatformClient(AppConfig(target_process_key="custom-key"), session, logging.getLogger("test")), session
 
 
-def test_query_work_orders_maps_har_shape_and_payload():
+def test_platform_client_distinguishes_login_html_from_proxy_html():
+    from backend.auth.cas_client import SessionExpired
+    from backend.platform.client import PlatformError
+
+    login_client, _ = make_client(FakeResponse('<form id="fm1">login</form>', content_type="text/html"))
+    with pytest.raises(SessionExpired):
+        login_client.find_process()
+
+    proxy_client, _ = make_client(FakeResponse("Bad Gateway", content_type="text/html"))
+    with pytest.raises(PlatformError):
+        proxy_client.find_process()
+
+
     client, session = make_client(FakeResponse({
         "objects": [{
             "id": "order-1",

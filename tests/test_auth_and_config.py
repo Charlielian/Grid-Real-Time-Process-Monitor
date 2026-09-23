@@ -1,3 +1,9 @@
+"""认证协议解析和配置持久化回归测试。
+
+测试用最小 HTML、临时配置路径和 fake 外部依赖覆盖登录页解析、RSA 加密、
+旧配置兼容、原子保存及敏感信息处理，避免真实访问上游平台。
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -24,14 +30,12 @@ def test_parse_login_page_rejects_missing_fields() -> None:
 def test_app_config_validation() -> None:
     config = AppConfig()
     assert config.origin.startswith("https://")
-    assert config.work_order_retention_days == 90
-    assert config.wal_max_size_mb == 256
     with pytest.raises(ValueError):
         AppConfig(base_url="http://example.test")
     with pytest.raises(ValueError):
-        AppConfig(work_order_retention_days=-1)
+        AppConfig(poll_interval_seconds=4)
     with pytest.raises(ValueError):
-        AppConfig(database_cleanup_interval_seconds=10)
+        AppConfig(lookback_hours=0)
 
 
 def _write_complete_config(paths, **updates) -> None:
@@ -98,6 +102,75 @@ def test_config_store_legacy_keyword_is_supported(tmp_path) -> None:
     assert ConfigStore(paths).load().target_title_keywords == ("广州",)
 
 
+def test_config_store_save_round_trips_and_preserves_comments(tmp_path) -> None:
+    paths = AppPaths(tmp_path / "data")
+    paths.yaml = tmp_path / "config.yaml"
+    paths.yaml.write_text(
+        "# 配置说明\nbase_url: https://nqi.gmcc.net:20443\n"
+        "web_host: 127.0.0.1\nweb_port: 5000\n"
+        "poll_interval_seconds: 60\nheartbeat_interval_seconds: 300\n"
+        "lookback_hours: 24\npage_size: 50\nauto_sync: false\n"
+        "ca_bundle: null\ntarget_process_title: 微网格实时优化流程\n"
+        "target_process_key: proc_wwg_ssyhlc\ntarget_title_keywords:\n  - 阳江\n"
+        "auto_claim_pending_tasks: false\n",
+        encoding="utf-8",
+    )
+    store = ConfigStore(paths)
+
+    store.save(with_updates := AppConfig(auto_sync=True, target_title_keywords=("广州",)))
+
+    loaded = store.load()
+    assert loaded.target_title_keywords == AppConfig().target_title_keywords
+    saved = paths.yaml.read_text(encoding="utf-8")
+    assert "target_title_keywords" not in saved
+    assert "target_title_keyword" not in saved
+    assert "# 配置说明" in saved
+    assert not list(tmp_path.glob(".*.config.yaml.*.tmp"))
+
+
+def test_config_store_save_cleans_temp_file_on_replace_failure(tmp_path, monkeypatch) -> None:
+    paths = AppPaths(tmp_path / "data")
+    paths.yaml = tmp_path / "config.yaml"
+    original = "base_url: https://example.test\n"
+    paths.yaml.write_text(original, encoding="utf-8")
+    store = ConfigStore(paths)
+
+    def fail_replace(_source, _target):
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr("shared.config.os.replace", fail_replace)
+    with pytest.raises(OSError, match="配置文件写入失败"):
+        store.save(AppConfig())
+
+    assert paths.yaml.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob(".*.config.yaml.*.tmp"))
+
+
+def test_app_paths_frozen_defaults_to_executable_data_dir(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "GridRealtimeMonitor.exe"
+    executable.touch()
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", str(executable))
+    monkeypatch.delenv("GRID_MONITOR_DATA_DIR", raising=False)
+
+    paths = AppPaths()
+
+    assert paths.root == tmp_path / "data"
+    assert paths.root.is_dir()
+
+
+def test_app_paths_data_dir_can_be_overridden_in_frozen_mode(tmp_path, monkeypatch) -> None:
+    override = tmp_path / "custom-data"
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", str(tmp_path / "GridRealtimeMonitor.exe"))
+    monkeypatch.setenv("GRID_MONITOR_DATA_DIR", str(override))
+
+    paths = AppPaths()
+
+    assert paths.root == override
+    assert paths.root.is_dir()
+
+
 def test_app_config_rejects_invalid_deployment_values() -> None:
     with pytest.raises(ValueError):
         AppConfig(web_port=0)
@@ -109,13 +182,11 @@ def test_app_config_rejects_invalid_deployment_values() -> None:
         AppConfig(target_process_key=" ")
 
 
-def test_app_config_rejects_invalid_maintenance_types() -> None:
-    with pytest.raises(ValueError):
-        AppConfig(database_max_size_mb="large")
-    with pytest.raises(ValueError):
-        AppConfig(wal_max_size_mb=True)
-    with pytest.raises(ValueError):
-        AppConfig(database_cleanup_batch_size=1.5)
+def test_windows_workflow_packages_data_placeholder() -> None:
+    workflow = (__import__("pathlib").Path(__file__).parents[1] / ".github/workflows/build-windows.yml").read_text(encoding="utf-8")
+    assert '"$package/data"' in workflow
+    assert 'Set-Content "$data/README.txt"' in workflow
+    assert 'Copy-Item "data"' not in workflow
 
 
 def test_rsa_pkcs1_encrypts_with_real_key() -> None:

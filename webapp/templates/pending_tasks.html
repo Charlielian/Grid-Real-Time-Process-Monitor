@@ -1,19 +1,54 @@
 {% extends 'base.html' %}
+{% from '_macros.html' import city_picker %}
+{# 待领取页面的表格首屏由脚本加载；宏提交的重复 city 字段会被 API 原样解析。 #}
 {% block content %}
-<div class="pending-page" data-page-size="50" data-poll-interval="{{ poll_interval_seconds }}" data-auto-claim="{{ 'true' if auto_claim_pending_tasks else 'false' }}">
+<div class="pending-page" data-page-size="{{ page_size }}" data-poll-interval="{{ poll_interval_seconds }}" data-auto-claim="{{ 'true' if auto_claim_pending_tasks else 'false' }}">
   <div class="page-header">
     <div>
       <h1>待领取任务</h1>
-      <span class="muted">仅显示标题包含「{{ '、'.join(target_title_keywords) }}」的微网格实时优化流程任务；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
+      <span class="muted">仅账号归属地市相关工单可领取；自动领取：{{ '开启' if auto_claim_pending_tasks else '关闭' }}</span>
     </div>
     <button type="button" class="button" id="pending-refresh">刷新</button>
+    <button type="button" class="button" id="pending-claim-all">一键领取相关地市工单</button>
+    <button type="button" class="button" id="pending-auto-claim-toggle">启动自动领取</button>
   </div>
+  <section class="card stats-panel" id="auto-claim-stats-panel" hidden>
+    <h2>自动领取统计</h2>
+    <div class="stats-overview">
+      <div class="stats-metric"><span>累计领取</span><strong id="stats-total">-</strong></div>
+      <div class="stats-metric"><span>本次启动</span><strong id="stats-session">-</strong></div>
+      <div class="stats-metric"><span>上次领取</span><strong id="stats-last">-</strong></div>
+    </div>
+    <div class="stats-body">
+      <div class="stats-accounts">
+        <h3>各账号领取</h3>
+        <table class="stats-table"><thead><tr><th>账号</th><th>累计领取</th></tr></thead>
+        <tbody id="stats-accounts-body"><tr><td colspan="2" class="muted">暂无领取记录</td></tr></tbody></table>
+      </div>
+      <div class="stats-history">
+        <h3>最近领取</h3>
+        <table class="stats-table"><thead><tr><th>时间</th><th>账号</th><th>条数</th></tr></thead>
+        <tbody id="stats-history-body"><tr><td colspan="3" class="muted">暂无领取记录</td></tr></tbody></table>
+      </div>
+    </div>
+    <div class="stats-tasks">
+      <h3>最近领取工单明细</h3>
+      <div class="stats-table-wrap">
+        <table class="stats-table tasks-table"><thead><tr><th>时间</th><th>账号</th><th>工单编号</th><th>标题</th></tr></thead>
+        <tbody id="stats-tasks-body"><tr><td colspan="4" class="muted">暂无领取记录</td></tr></tbody></table>
+      </div>
+    </div>
+  </section>
+  <form class="filters pending-filters" method="get">
+    {{ city_picker(cities, selected_cities, 'pending-city') }}
+    <button class="button filter-submit" type="submit">筛选</button>
+  </form>
   <div id="pending-message" class="muted" role="status"></div>
   <noscript>人工领取</noscript>
   <section class="card table-wrap pending-table-wrap">
-    <table class="pending-table"><thead><tr><th>编号</th><th>标题</th><th>当前节点</th><th>创建时间</th><th>到期时间</th><th>操作</th></tr></thead>
-    <tbody id="pending-rows"><tr><td colspan="6" class="muted">正在加载…</td></tr></tbody></table>
+    <table class="pending-table"><thead><tr><th>编号</th><th>标题</th><th>当前节点</th><th>创建时间</th><th>到期时间</th><th>领取状态</th><th>操作</th></tr></thead>
+    <tbody id="pending-rows"><tr><td colspan="7" class="muted">正在加载…</td></tr></tbody></table>
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/pending_tasks.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/city_picker.js') }}"></script><script src="{{ url_for('static', filename='js/pending_tasks.js') }}"></script>{% endblock %}

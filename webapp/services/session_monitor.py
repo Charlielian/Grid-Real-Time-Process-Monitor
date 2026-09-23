@@ -1,3 +1,10 @@
+"""已保存账号的后台会话心跳服务。
+
+心跳线程不依赖浏览器页面，按配置周期验证 Cookie 会话并更新状态。单个账号或
+单轮网络失败不会终止整个线程；shutdown 设置停止标志并以 deadline 关闭会话，
+保证 WSGI 导入启动的后台服务可以有界退出。
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,9 +15,8 @@ from typing import Any
 import requests
 
 from backend.auth.cas_client import AuthError, CasClient, SessionExpired, SessionFactory
-from backend.storage.database import Database
 from shared.config import AppConfig
-from webapp.services.auth import PersistentCookieStore
+from webapp.services.auth import AccountIndexStore, PersistentCookieStore
 
 
 class SessionMonitor:
@@ -18,22 +24,22 @@ class SessionMonitor:
 
     def __init__(
         self,
-        database: Database,
         config: AppConfig,
         logger: logging.Logger | None = None,
         *,
         interval_seconds: int | None = None,
     ) -> None:
-        self.database = database
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
         self.interval_seconds = interval_seconds or config.heartbeat_interval_seconds
         self.cookies = PersistentCookieStore(config, self.logger)
+        self.accounts = AccountIndexStore(config, self.logger)
         self._stop = threading.Event()
         self._lock = threading.RLock()
         self._account_locks: dict[str, threading.Lock] = {}
         self._sessions: dict[str, requests.Session] = {}
         self._thread: threading.Thread | None = None
+        self._closed = False
 
     def update_config(self, config: AppConfig) -> None:
         with self._lock:
@@ -46,6 +52,7 @@ class SessionMonitor:
                 self.config = config
                 self.interval_seconds = config.heartbeat_interval_seconds
                 self.cookies = PersistentCookieStore(config, self.logger)
+                self.accounts = AccountIndexStore(config, self.logger)
                 sessions = list(self._sessions.values())
                 self._sessions.clear()
             for session in sessions:
@@ -60,6 +67,8 @@ class SessionMonitor:
 
     def _session_for(self, login_id: str) -> requests.Session:
         with self._lock:
+            if self._closed:
+                raise RuntimeError("会话监控已关闭")
             session = self._sessions.get(login_id)
             if session is None:
                 session = SessionFactory(self.config, self.logger).create()
@@ -71,7 +80,7 @@ class SessionMonitor:
         return datetime.now(timezone.utc).isoformat()
 
     def _update(self, login_id: str, *, status: str, error: str | None, failures: int) -> None:
-        self.database.update_heartbeat(
+        self.accounts.update_heartbeat(
             login_id,
             status=status,
             heartbeat_at=self._now(),
@@ -80,22 +89,25 @@ class SessionMonitor:
         )
 
     def check_now(self, login_id: str) -> dict[str, Any] | None:
-        """Validate one saved account and return its redacted database record."""
+        """Validate one saved account and return its redacted account record."""
         if not login_id:
             return None
-        account = self.database.get_saved_account(login_id)
+        with self._lock:
+            if self._closed or self._stop.is_set():
+                return None
+        account = self.accounts.get(login_id)
         if account is None:
             return None
         lock = self._lock_for(login_id)
         with lock:
-            current = self.database.get_saved_account(login_id)
+            current = self.accounts.get(login_id)
             if current is None:
                 return None
             failures = int(current["consecutive_failures"] or 0)
             session = self._session_for(login_id)
             if not self.cookies.load(login_id, session):
                 self._update(login_id, status="expired", error="没有可用的保存会话", failures=failures + 1)
-                return dict(self.database.get_saved_account(login_id))
+                return dict(self.accounts.get(login_id))
             try:
                 CasClient(self.config, session, self.logger).check_session(expected_login_id=login_id)
                 # CAS may rotate a service cookie in Set-Cookie; persist only the cookie jar.
@@ -111,22 +123,38 @@ class SessionMonitor:
                 self._update(login_id, status="error", error="会话检查暂时失败", failures=failures + 1)
             else:
                 self._update(login_id, status="healthy", error=None, failures=0)
-            return dict(self.database.get_saved_account(login_id))
+            return dict(self.accounts.get(login_id))
 
     def _run_cycle(self) -> None:
-        for account in self.database.list_saved_accounts():
+        try:
+            accounts = self.accounts.list()
+        except Exception:
+            self.logger.exception("读取保存账号失败")
+            return
+        for account in accounts:
             if self._stop.is_set():
                 return
             if account["heartbeat_status"] == "expired":
                 continue
-            self.check_now(str(account["login_id"]))
+            login_id = str(account["login_id"])
+            try:
+                self.check_now(login_id)
+            except Exception:
+                self.logger.exception("账号心跳检查失败: login_id=%s", login_id)
 
     def _close_sessions(self) -> None:
         with self._lock:
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
-        for session in sessions:
-            session.close()
+            login_ids = list(self._sessions)
+        for login_id in login_ids:
+            lock = self._lock_for(login_id)
+            with lock:
+                with self._lock:
+                    session = self._sessions.pop(login_id, None)
+                if session is not None:
+                    try:
+                        session.close()
+                    except Exception:
+                        self.logger.exception("关闭心跳会话失败: login_id=%s", login_id)
 
     def _run(self) -> None:
         try:
@@ -138,6 +166,8 @@ class SessionMonitor:
 
     def start(self) -> None:
         with self._lock:
+            if self._closed:
+                return
             if self._thread and self._thread.is_alive():
                 return
             self._stop.clear()
@@ -145,8 +175,12 @@ class SessionMonitor:
             self._thread.start()
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        self._stop.set()
-        thread = self._thread
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._stop.set()
+            thread = self._thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=timeout)
         if thread and thread.is_alive():

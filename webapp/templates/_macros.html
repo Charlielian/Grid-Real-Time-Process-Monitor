@@ -1,0 +1,54 @@
+{#
+  共享地市筛选宏。
+
+  cities 和 selected_cities 来自后端的广东 21 个地市枚举。可见输入框和标签只负责
+  交互；每个已选城市同时生成一个隐藏的 name="city" 字段，因此浏览器提交后端时
+  仍然会产生重复 query 参数，保持 request.args.getlist("city") 的多城市 OR 语义。
+#}
+{% macro city_picker(cities, selected_cities, picker_id) -%}
+  <section class="city-picker" data-city-picker aria-labelledby="{{ picker_id }}-label">
+    <div class="city-picker-heading">
+      <div>
+        <span class="field-label" id="{{ picker_id }}-label">地市</span>
+        <span class="city-picker-hint">按标题匹配，多选为“或”</span>
+      </div>
+      <span class="city-picker-count" data-city-count>未选择（全部）</span>
+    </div>
+    <div class="city-picker-toolbar">
+      <div class="city-search-wrap">
+        <span class="city-search-icon" aria-hidden="true">⌕</span>
+        <input
+          class="city-search"
+          type="search"
+          id="{{ picker_id }}-search"
+          placeholder="输入或选择地市"
+          autocomplete="off"
+          aria-label="输入或选择地市"
+          aria-controls="{{ picker_id }}-panel"
+          aria-expanded="false"
+          data-city-search>
+        <span class="city-search-chevron" aria-hidden="true">⌄</span>
+      </div>
+      <div class="city-picker-actions">
+        <button type="button" class="text-button" data-city-select-all>全选</button>
+        <button type="button" class="text-button" data-city-clear>清空</button>
+      </div>
+    </div>
+    <div class="city-selected" data-city-selected aria-live="polite">
+      {% for city in selected_cities %}
+        <span class="city-tag" data-city-tag="{{ city }}">{{ city }}<button type="button" class="city-tag-remove" data-city-remove="{{ city }}" aria-label="移除{{ city }}">×</button></span>
+        <input type="hidden" name="city" value="{{ city }}" data-city-value="{{ city }}">
+      {% endfor %}
+    </div>
+    <div class="city-picker-panel" id="{{ picker_id }}-panel" role="listbox" aria-label="地市枚举值" data-city-panel hidden>
+      <div class="city-suggestions" id="{{ picker_id }}-suggestions" role="listbox" aria-label="地市联想结果" data-city-suggestions hidden></div>
+      <div class="city-options" role="group" aria-label="地市列表" data-city-options>
+        {% for city in cities %}
+          <button type="button" class="city-option{% if city in selected_cities %} is-selected{% endif %}" role="option" aria-selected="{{ 'true' if city in selected_cities else 'false' }}" data-city-option data-city="{{ city }}">{{ city }}</button>
+        {% endfor %}
+      </div>
+      <span class="city-picker-empty" data-city-empty hidden>没有匹配的地市，请换个关键词</span>
+      <span class="city-picker-note">不选择地市时显示全部</span>
+    </div>
+  </section>
+{%- endmacro %}

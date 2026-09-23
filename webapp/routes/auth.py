@@ -1,10 +1,19 @@
+"""浏览器登录流程和已保存会话管理路由。
+
+本模块只负责 HTTP 输入输出和错误映射，认证协议由 backend.auth 和平台客户端
+实现。真正的 SessionExpired 才返回登录失效；网络异常保留为可重试的服务错误。
+"""
+
 from __future__ import annotations
 
 from io import BytesIO
 
+import requests
+
 from flask import Blueprint, current_app, jsonify, redirect, request, session, url_for
 
 from backend.auth.cas_client import AuthError, SessionExpired
+from backend.platform.client import PlatformError
 from webapp.routes.decorators import check_csrf
 
 bp = Blueprint("auth", __name__)
@@ -31,9 +40,13 @@ def captcha():
     context = _context()
     try:
         image = current_app.extensions["web_auth"].captcha(context)
+    except SessionExpired:
+        return jsonify({"error": "unauthorized", "message": "登录会话已失效"}), 401
+    except (PlatformError, requests.RequestException):
+        return jsonify({"error": "upstream_unavailable", "message": "验证码获取失败，请稍后重试"}), 502
     except Exception:
         current_app.extensions["logger"].exception("获取验证码失败")
-        return jsonify({"error": "upstream_unavailable", "message": "验证码获取失败"}), 502
+        return jsonify({"error": "internal_error", "message": "验证码获取失败"}), 500
     response = current_app.response_class(image, mimetype="image/jpeg")
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -93,7 +106,7 @@ def login_submit():
     session.permanent = True
     session["saved_login_id"] = user.login_id
     current_app.extensions["session_monitor"].check_now(user.login_id)
-    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.dashboard")})
+    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.orders")})
 
 
 @bp.post("/auth/restore")
@@ -103,19 +116,23 @@ def restore_saved_session():
     login_id = data.get("login_id", "").strip() or session.get("saved_login_id")
     if not login_id:
         return jsonify({"ok": False, "message": "没有可恢复的登录会话"}), 404
-    if current_app.extensions["web_auth"].database.get_saved_account(login_id) is None:
+    if current_app.extensions["web_auth"].accounts.get(login_id) is None:
         return jsonify({"ok": False, "message": "未找到该保存账号"}), 404
     auth = current_app.extensions["web_auth"]
     context = _context()
     try:
         user = auth.restore(context, login_id)
-    except Exception:
-        current_app.extensions["logger"].exception("恢复保存会话失败")
+    except SessionExpired:
         session.pop("auth_context_id", None)
         return jsonify({"ok": False, "message": "保存的 Cookies 已失效，请重新登录"}), 401
+    except (PlatformError, requests.RequestException):
+        return jsonify({"ok": False, "message": "网络暂时不可用，请稍后重试"}), 503
+    except Exception:
+        current_app.extensions["logger"].exception("恢复保存会话失败")
+        return jsonify({"ok": False, "message": "恢复登录会话失败，请稍后重试"}), 500
     session.permanent = True
     session["saved_login_id"] = user.login_id
-    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.dashboard")})
+    return jsonify({"ok": True, "user": {"login_id": user.login_id, "display_name": user.display_name}, "redirect": url_for("web.orders")})
 
 
 @bp.get("/auth/saved-accounts")
@@ -138,7 +155,7 @@ def saved_accounts():
 @bp.delete("/auth/saved-accounts/<login_id>")
 def delete_saved_account(login_id: str):
     check_csrf()
-    if not login_id or current_app.extensions["web_auth"].database.get_saved_account(login_id) is None:
+    if not login_id or current_app.extensions["web_auth"].accounts.get(login_id) is None:
         return jsonify({"ok": False, "message": "未找到该保存账号"}), 404
     current_app.extensions["web_auth"].remove_saved_account(login_id)
     if session.get("saved_login_id") == login_id:

@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+# Web 层应用工厂：集中装配 Flask、鉴权上下文和后台会话监控。
+# 本模块只负责生命周期与依赖关系；具体 HTTP 输入校验和响应格式由 routes 子模块处理。
+
 import secrets
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, current_app, session
 
-from backend.storage.database import Database
 from shared.config import AppConfig, AppPaths, ConfigStore, configure_logging
 from webapp.services.auth import SessionRegistry, WebAuthService
-from webapp.services.database_maintenance import DatabaseMaintenanceService
 from webapp.services.session_monitor import SessionMonitor
-from webapp.services.sync import SyncJobManager
+from webapp.services.auto_claim import AutoClaimService
 
 
 def _secret_key(paths: AppPaths, test_config: dict[str, Any] | None) -> str:
+    """按配置、环境变量、磁盘文件的优先级取得 Flask 会话签名密钥。
+
+    密钥文件仅在没有外部配置时生成，并尽量收紧权限；文件系统不可写时退回
+    到进程内随机值，保证应用仍能启动，但该退回值不会跨进程或重启保留。
+    """
     configured = (test_config or {}).get("SECRET_KEY") or __import__("os").environ.get("GRID_MONITOR_SECRET_KEY")
     if configured:
         return str(configured)
@@ -33,6 +41,11 @@ def _secret_key(paths: AppPaths, test_config: dict[str, Any] | None) -> str:
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
+    """创建并装配 Web 应用，同时启动非测试环境需要的后台服务。
+
+    ``test_config`` 用于测试时覆盖路径、配置和 Flask 选项。应用关闭时通过统一
+    shutdown 回调按会话监控、会话注册表的顺序释放资源。
+    """
     app = Flask(__name__, template_folder="templates", static_folder="static")
     paths = AppPaths((test_config or {}).get("DATA_DIR") if test_config else None)
     logger = configure_logging(paths)
@@ -51,24 +64,22 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     if test_config:
         app.config.update(test_config)
 
-    database = Database(Path(app.config["DATA_DIR"]) / "monitor.sqlite3")
     registry = SessionRegistry(config, logger, ttl_seconds=int(app.config.get("AUTH_CONTEXT_TTL", 1800)))
-    auth = WebAuthService(registry, logger, database)
-    jobs = SyncJobManager(database, logger)
-    registry.set_remove_callback(lambda context_id: jobs.cancel_context(context_id, wait=True))
-    monitor = SessionMonitor(database, config, logger)
-    maintenance = DatabaseMaintenanceService(database, config, logger, autostart=not bool(app.config.get("TESTING")))
+    auth = WebAuthService(registry, logger)
+    monitor = SessionMonitor(config, logger)
+    auto_claim = AutoClaimService(config, logger, data_dir=paths.root)
+    if not app.config.get("TESTING"):
+        monitor.start()
+        auto_claim.start()
     app.extensions.update({
         "paths": paths,
         "logger": logger,
         "config_store": config_store,
         "app_config": config,
-        "database": database,
         "session_registry": registry,
         "web_auth": auth,
-        "sync_jobs": jobs,
         "session_monitor": monitor,
-        "database_maintenance": maintenance,
+        "auto_claim": auto_claim,
     })
 
     shutdown_lock = __import__("threading").Lock()
@@ -79,11 +90,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if shutdown_state["closed"]:
                 return
             shutdown_state["closed"] = True
-        jobs.shutdown()
-        monitor.shutdown()
-        maintenance.shutdown()
-        registry.shutdown()
-        database.close()
+        deadline = time.monotonic() + 10
+        try:
+            monitor.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("会话监控关闭失败")
+        try:
+            auto_claim.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("自动领取服务关闭失败")
+        try:
+            registry.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:
+            logger.exception("会话注册表关闭失败")
 
     app.extensions["shutdown"] = shutdown_resources
 
